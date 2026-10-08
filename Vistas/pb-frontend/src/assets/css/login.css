@@ -1,0 +1,60 @@
+/* Estilos del <style> de login.html, acotados a body.login-page */
+body.login-page { background: #1a1a1a; display: flex; align-items: center; justify-content: center; min-height: 100vh; }
+body.login-page #root { width: 100%; display: flex; align-items: center; justify-content: center; }
+
+.login-wrap {
+  width: 100%;
+  max-width: 420px;
+  padding: 20px;
+}
+
+.login-card {
+  background: var(--white);
+  border-radius: var(--radius-xl);
+  padding: 40px;
+  box-shadow: 0 20px 60px rgba(0,0,0,.35);
+}
+
+.login-logo {
+  width: 52px; height: 52px;
+  background: var(--orange);
+  border-radius: 14px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 22px; font-weight: 700; color: var(--white);
+  margin-bottom: 22px;
+  letter-spacing: -0.5px;
+}
+
+.login-title { font-size: 24px; font-weight: 700; margin-bottom: 4px; }
+.login-sub   { font-size: 13px; color: var(--gray); margin-bottom: 28px; }
+
+.forgot-link {
+  font-size: 13px;
+  color: var(--orange);
+  font-weight: 500;
+  cursor: pointer;
+  float: right;
+  margin-top: -8px;
+  margin-bottom: 20px;
+  display: block;
+}
+.forgot-link:hover { color: var(--orange-dark); }
+
+.login-submit {
+  width: 100%;
+  justify-content: center;
+  padding: 12px;
+  font-size: 14px;
+  margin-top: 8px;
+}
+
+.login-demo {
+  font-size: 12px;
+  color: #aaa;
+  text-align: center;
+  margin-top: 20px;
+  line-height: 1.7;
+}
+.login-demo b { color: #777; }
+
+#alert-container .alert { margin-bottom: 0; }
