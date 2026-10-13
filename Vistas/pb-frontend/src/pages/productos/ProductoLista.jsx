@@ -5,9 +5,10 @@ import { formatMoney } from '../../utils/format';
 import { useAuth } from '../../hooks/useAuth';
 import { useConfirm } from '../../hooks/useDialog';
 import { usePageTitle } from '../../contexts/TitleContext';
-import Alert, { useAlert } from '../../components/Alert';
+import Alert, { useAlert, AvisoCerrable } from '../../components/Alert';
 import Pagination from '../../components/Pagination';
 import { usePagination } from '../../hooks/usePagination';
+import NombreCorto from '../../components/NombreCorto';   // F-17
 
 /* ── Helpers copiados de lista.html ─────────────────── */
 function getStockStatus(p) {
@@ -346,10 +347,10 @@ export default function ProductoLista() {
               <button className="modal-close" onClick={() => setToDelete(null)}>&#x2715;</button>
             </div>
             <div className="modal-body">
-              <div className="alert alert-danger">
+              <AvisoCerrable className="alert alert-danger">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
                 Esta acción no se puede deshacer. Si el producto tiene movimientos asociados, solo podrá desactivarse.
-              </div>
+              </AvisoCerrable>
               <p style={{ fontSize: 14, color: 'var(--gray)', lineHeight: 1.6 }}>¿Estás seguro de que deseas eliminar este producto del catálogo?</p>
             </div>
             <div className="modal-footer">
@@ -375,7 +376,7 @@ export default function ProductoLista() {
             </div>
             <div className="modal-body">
               <div id="modal-dup-alert">
-                {dupError && <div className="alert alert-danger">{dupError}</div>}
+                {dupError && <AvisoCerrable className="alert alert-danger">{dupError}</AvisoCerrable>}
               </div>
               <div className="form-group">
                 <label className="form-label">SKU base</label>
@@ -425,7 +426,7 @@ export default function ProductoLista() {
                         <td>{h.fecha ? new Date(h.fecha).toLocaleDateString('sv-SE') : '—'}</td>
                         <td style={{ fontWeight: 600 }}>{formatMoney(h.precio_unitario)}</td>
                         <td>{h.lote || '—'}</td>
-                        <td>{h.proveedor || '—'}</td>
+                        <td><NombreCorto texto={h.proveedor} /></td>
                         <td>{h.factura || '—'}</td>
                       </tr>
                     ))}

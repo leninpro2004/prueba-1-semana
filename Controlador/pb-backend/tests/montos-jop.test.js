@@ -1,7 +1,6 @@
 const { test, before, after, describe } = require('node:test');
 const assert = require('node:assert/strict');
-const jwt = require('jsonwebtoken');
-const { api, bajar, levantar } = require('./helpers/api');
+const { api, bajar, levantar, token: tokenDe } = require('./helpers/api');
 const db = require('./helpers/db');
 
 /**
@@ -69,7 +68,7 @@ const RUTAS = [
   '/api/reportes/consumo-area/grafico?agrupar=area', `/api/reportes/consumo-area/grafico?agrupar=area&${DESDE}`,
   '/api/reportes/consumo-area/grafico?agrupar=material', '/api/reportes/consumo-area/grafico?agrupar=mes',
   '/api/reportes/programacion-semanal', '/api/reportes/rotacion?desde=2026-01-01&hasta=2026-06-30',
-  `/api/reportes/desviaciones?${DESDE}`,
+  `/api/reportes/desviaciones?${DESDE}`, '/api/reportes/resumen',
   '/api/ordenes-trabajo', '/api/ordenes-trabajo/1/consumos', '/api/ordenes-trabajo/1/movimientos',
   '/api/ordenes-trabajo/1/comparativo', '/api/ordenes-trabajo/2/diferenciales',
   '/api/proveedores', '/api/proveedores/1', '/api/proveedores/metricas', '/api/proveedores/1/cumplimiento',
@@ -83,14 +82,15 @@ const RUTAS = [
   '/api/recetas', '/api/recetas/1', '/api/recetas/por-orden/1',
   '/api/bodegas', '/api/bodegas/1', '/api/bodegas/1/stock-consolidado',
   '/api/conteos', '/api/conteos/bodega/1/preparar', '/api/codigos/MAT-FIFO',
+  '/api/integracion/stock?sku=MAT-FIFO',   // CU-106
   '/api/notificaciones', '/api/notificaciones/resumen',
 ];
 
-/** GET con un rol cualquiera (los helpers solo firman gerencia y jop). */
+/** GET con un rol cualquiera (un usuario de la semilla por rol). */
 async function getComo(rol, ruta) {
   if (rol !== 'tecnico') return api('GET', ruta, { rol });
   const url = await levantar();
-  const token = jwt.sign({ id: 2, username: 'jop.test', rol }, process.env.JWT_SECRET, { expiresIn: '5m' });
+  const token = tokenDe(rol); // B-01: cada rol es un usuario de la semilla
   const r = await fetch(url + ruta, { headers: { Authorization: `Bearer ${token}` } });
   return { status: r.status, body: await r.json().catch(() => null) };
 }

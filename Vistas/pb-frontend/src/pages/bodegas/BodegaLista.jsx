@@ -4,7 +4,9 @@ import { formatQty } from '../../utils/format';
 import { useAuth } from '../../hooks/useAuth';
 import { useConfirm } from '../../hooks/useDialog';
 import { usePageTitle } from '../../contexts/TitleContext';
-import Alert, { useAlert } from '../../components/Alert';
+import Alert, { useAlert, AvisoCerrable } from '../../components/Alert';
+import { usePagination } from '../../hooks/usePagination';
+import Pagination from '../../components/Pagination';
 
 // Opciones estáticas del modal "Asignar producto" (copiadas del HTML)
 const PRODUCTOS_ASIGNAR = [
@@ -31,6 +33,7 @@ export default function BodegaLista() {
   const [bodegas, setBodegas] = useState(null);       // null = aún sin cargar
   const [bodegaActual, setBodegaActual] = useState(null);
   const [detalle, setDetalle] = useState(null);       // data de API.bodegas.obtener
+  const pag = usePagination(detalle?.materiales ?? null, 20);   // B-10: productos de la bodega
 
   // Modales
   const [modalNueva, setModalNueva] = useState(false);
@@ -229,12 +232,12 @@ export default function BodegaLista() {
           )}
           {(bodegas || []).map(b => (
             <div key={b.id} className="card" style={{ cursor: 'pointer', transition: 'border-color .15s' }}
-              onMouseEnter={e => { e.currentTarget.style.borderColor = '#fe8f01'; }}
-              onMouseLeave={e => { e.currentTarget.style.borderColor = '#e0e0e0'; }}
+              onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--orange)'; }}
+              onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--gray-mid)'; }}
               onClick={() => verDetalle(b.id)}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 }}>
                 <div style={{ width: 44, height: 44, background: 'var(--orange-light)', borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fe8f01" strokeWidth="1.8"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="var(--orange)" strokeWidth="1.8"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
                 </div>
                 <span className={`badge ${b.estado === 'activo' ? 'badge-success' : 'badge-gray'}`}>{b.estado}</span>
               </div>
@@ -274,7 +277,7 @@ export default function BodegaLista() {
             {/* Form editar bodega (CU-21) */}
             {editOpen && (
               <div id="edit-bodega-form" style={{ marginBottom: 16, padding: 16, background: 'var(--bg-alt)', borderRadius: 8, border: '1px solid var(--border)' }}>
-                <div id="edit-bodega-alert">{editAlert && <div className="alert alert-danger">{editAlert}</div>}</div>
+                <div id="edit-bodega-alert">{editAlert && <AvisoCerrable className="alert alert-danger">{editAlert}</AvisoCerrable>}</div>
                 <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
                   <div className="form-group" style={{ marginBottom: 0, flex: 1, minWidth: 160 }}>
                     <label className="form-label">Nombre</label>
@@ -306,7 +309,7 @@ export default function BodegaLista() {
                   {(!detalle.materiales || detalle.materiales.length === 0) && (
                     <tr><td colSpan={5}><div className="empty-state"><p>Sin existencias registradas en esta bodega.</p></div></td></tr>
                   )}
-                  {(detalle.materiales || []).map(i => {
+                  {pag.items.map(i => {
                     const color = parseFloat(i.cantidad_fisica || 0) <= parseFloat(i.stock_critico || 0) ? 'var(--danger)'
                                 : parseFloat(i.cantidad_fisica || 0) <= parseFloat(i.stock_minimo || 0)  ? 'var(--warning)'
                                 : 'inherit';
@@ -323,6 +326,7 @@ export default function BodegaLista() {
                 </tbody>
               </table>
             </div>
+            <Pagination {...pag} />
 
             {/* Anaqueles (CU-25) */}
             <div style={{ marginTop: 24, paddingTop: 20, borderTop: '1px solid #f0f0f0' }}>
@@ -389,7 +393,7 @@ export default function BodegaLista() {
               <button className="modal-close" onClick={() => setModalNueva(false)}>&#x2715;</button>
             </div>
             <div className="modal-body">
-              <div id="modal-nueva-alert">{nAlert && <div className="alert alert-danger">{nAlert}</div>}</div>
+              <div id="modal-nueva-alert">{nAlert && <AvisoCerrable className="alert alert-danger">{nAlert}</AvisoCerrable>}</div>
               <div className="form-group">
                 <label className="form-label" htmlFor="n-codigo">Código único <span className="required">*</span></label>
                 <input className="form-control" id="n-codigo" placeholder="BOD-004" value={nCodigo} onChange={e => setNCodigo(e.target.value)}
@@ -453,7 +457,7 @@ export default function BodegaLista() {
               <button className="modal-close" onClick={() => setModalAnaquel(false)}>&#x2715;</button>
             </div>
             <div className="modal-body">
-              <div id="modal-anaquel-alert">{anqAlert && <div className="alert alert-danger">{anqAlert}</div>}</div>
+              <div id="modal-anaquel-alert">{anqAlert && <AvisoCerrable className="alert alert-danger">{anqAlert}</AvisoCerrable>}</div>
               <div className="form-group">
                 <label className="form-label" htmlFor="anq-desc">Descripción / Identificador <span className="required">*</span></label>
                 <input className="form-control" id="anq-desc" placeholder="Ej: A-01 Estante superior izquierdo" value={anqDesc} onChange={e => setAnqDesc(e.target.value)} />
@@ -480,7 +484,7 @@ export default function BodegaLista() {
               <button className="modal-close" onClick={() => setEditAnaquel(null)}>&#x2715;</button>
             </div>
             <div className="modal-body">
-              <div id="modal-editar-anaquel-alert">{editAnaquelAlert && <div className="alert alert-danger">{editAnaquelAlert}</div>}</div>
+              <div id="modal-editar-anaquel-alert">{editAnaquelAlert && <AvisoCerrable className="alert alert-danger">{editAnaquelAlert}</AvisoCerrable>}</div>
               <div className="form-group">
                 <label className="form-label" htmlFor="edit-anq-desc">Descripción / Identificador <span className="required">*</span></label>
                 <input className="form-control" id="edit-anq-desc" placeholder="Ej: A-01 Estante superior izquierdo"

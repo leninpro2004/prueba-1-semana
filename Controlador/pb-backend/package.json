@@ -6,14 +6,18 @@
   "scripts": {
     "dev": "nodemon src/index.js",
     "start": "node src/index.js",
-    "lint": "oxlint src tests",
+    "lint": "oxlint src tests scripts",
     "test": "node --test --test-concurrency=1 \"tests/**/*.test.js\"",
-    "test:preparar": "node tests/preparar.js"
+    "test:preparar": "node tests/preparar.js",
+    "recuperar-acceso": "node scripts/recuperarAcceso.js",
+    "importar": "node scripts/importar/importar.js",
+    "plantilla": "node scripts/importar/generarPlantilla.js"
   },
   "dependencies": {
     "bcrypt": "^5.1.1",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
+    "exceljs": "^4.4.0",
     "express": "^4.19.2",
     "jsonwebtoken": "^9.0.2",
     "pdfkit": "^0.19.1",

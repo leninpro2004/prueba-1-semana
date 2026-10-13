@@ -4,6 +4,7 @@ import { API } from '../../services/api';
 import { usePageTitle } from '../../contexts/TitleContext';
 import { BarrasHorizontales, descargarGrafico } from '../../components/Charts';
 import BotonExportar from '../../components/BotonExportar';
+import Alert, { AvisoCerrable } from '../../components/Alert';
 import { exportarCSV } from '../../utils/csvExport';
 import { exportarPDF } from '../../utils/pdfExport';
 
@@ -152,8 +153,8 @@ export default function ProveedorMetricas() {
         </div>
       </div>
 
-      {rangoInvalido && <div className="alert alert-danger" style={{ marginBottom: 16 }}>La fecha de inicio es posterior a la fecha de fin. Corrija el rango.</div>}
-      {error && <div className="alert alert-danger" style={{ marginBottom: 16 }}>{error}</div>}
+      {rangoInvalido && <AvisoCerrable className="alert alert-danger" style={{ marginBottom: 16 }}>La fecha de inicio es posterior a la fecha de fin. Corrija el rango.</AvisoCerrable>}
+      <Alert type="danger" message={error} style={{ marginBottom: 16 }} onClose={() => setError('')} />
 
       {/* Exc 1: no hay ningún pedido completado en el sistema */}
       {datos && !rangoInvalido && datos.total_sistema === 0 && (

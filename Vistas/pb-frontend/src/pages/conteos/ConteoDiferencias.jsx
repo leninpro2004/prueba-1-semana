@@ -133,7 +133,7 @@ export default function ConteoDiferencias() {
       <div className="page-header">
         <div>
           <div className="page-title">Diferencias del conteo #{id}</div>
-          <div className="page-subtitle">{c ? `${c.bodega} · contado el ${fechaHora(c.fecha_hora)} por ${c.usuario || '—'}` : 'Comparación contra el stock del sistema (CU-43)'}</div>
+          <div className="page-subtitle">{c ? `${c.bodega} · contado el ${fechaHora(c.fecha_hora)} por ${c.usuario || '—'}` : 'Comparación contra el stock del sistema'}</div>
         </div>
         <Link to={`/conteos/${id}`} className="btn btn-secondary">← Volver al conteo</Link>
       </div>

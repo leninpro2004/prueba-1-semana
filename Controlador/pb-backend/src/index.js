@@ -1,6 +1,9 @@
 require('dotenv').config();
+// C-05: hora de Chile aunque el servidor corra en UTC (AWS). Antes de crear cualquier fecha.
+process.env.TZ = process.env.TZ || 'America/Santiago';
 const express = require('express');
 const cors    = require('cors');
+const { pool, query } = require('./db/pool');
 
 /* ── Rutas ── */
 const authRoutes             = require('./routes/auth');
@@ -27,9 +30,17 @@ const codigoRoutes           = require('./routes/codigos');
 const conteoRoutes           = require('./routes/conteos');
 const integracionRoutes      = require('./routes/integracion');
 const pedidoVentaRoutes      = require('./routes/pedidosVenta');
+// — Fase de cierre —
+const catalogoRoutes         = require('./routes/catalogos');
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
+
+// S-10 (F-02): detrás de nginx la IP real del usuario llega en X-Forwarded-For (la usan el límite de
+// intentos del login y el antispam de recuperación). Solo con TRUST_PROXY=1: sin un proxy delante,
+// ese encabezado se podría falsificar.
+if (process.env.TRUST_PROXY === '1') app.set('trust proxy', 1);
+app.disable('x-powered-by');
 
 /* ── Middlewares globales ─────────────────────────────── */
 app.use(cors({
@@ -37,6 +48,17 @@ app.use(cors({
   credentials: true,
 }));
 app.use(express.json());
+// S-05 (F-02): cabeceras de seguridad de la API. Las de la página (CSP, HSTS) las pone nginx:
+// docs/fase-cierre/despliegue.md. Una ruta puede cambiar Cache-Control con res.set().
+app.use((req, res, next) => {
+  res.set({
+    'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'DENY',
+    'Referrer-Policy': 'no-referrer',
+    'Cache-Control': 'no-store',
+  });
+  next();
+});
 
 /* ── Rutas ───────────────────────────────────────────── */
 // Incremento 1
@@ -67,9 +89,18 @@ app.use('/api/conteos',           conteoRoutes);   // CU-37
 app.use('/api/integracion',       integracionRoutes); // CU-108
 app.use('/api/pedidos-venta',     pedidoVentaRoutes); // CU-120 → 119: pedidos de instalación
 
+// Fase de cierre
+app.use('/api/catalogos',         catalogoRoutes);    // F-04: áreas, unidades y motivos
+
 /* ── Health check ────────────────────────────────────── */
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+// C-09: mira también la BD, para que un monitor externo vea la caída real (503)
+app.get('/api/health', async (req, res) => {
+  try {
+    await query('SELECT 1');
+    res.json({ status: 'ok', db: 'ok', timestamp: new Date().toISOString() });
+  } catch (err) {
+    res.status(503).json({ status: 'error', db: 'sin conexión', detalle: err.message });
+  }
 });
 
 /* ── 404 ─────────────────────────────────────────────── */
@@ -90,7 +121,7 @@ app.use((err, req, res, _next) => {
 // (npm run dev / npm start). Al hacer require() desde los tests, se exporta la
 // app sin escuchar en ningun puerto, para que cada test la levante en uno libre.
 if (require.main === module) {
-  app.listen(PORT, () => {
+  const servidor = app.listen(PORT, () => {
     console.log(`🚀 Servidor corriendo en http://localhost:${PORT}`);
     console.log(`   Entorno: ${process.env.NODE_ENV || 'development'}`);
   });
@@ -102,7 +133,39 @@ if (require.main === module) {
     .then(r => { if (r.nuevas + r.actualizadas + r.descartadas > 0) console.log('[insumos especiales]', r); })
     .catch(e => console.warn('[insumos especiales] revisión fallida:', e.message));
   revisarInsumosEspeciales();
-  setInterval(revisarInsumosEspeciales, 5 * 60 * 1000);
+  const timerInsumos = setInterval(revisarInsumosEspeciales, 5 * 60 * 1000);
+
+  // B-04: activaciones y desactivaciones programadas de cuentas, al arrancar y cada minuto.
+  const { aplicarProgramaciones } = require('./controllers/usuariosController');
+  const revisarProgramaciones = () => aplicarProgramaciones()
+    .then(r => { if (r.procesadas > 0) console.log('[programaciones de cuentas]', r); })
+    .catch(e => console.warn('[programaciones de cuentas] revisión fallida:', e.message));
+  revisarProgramaciones();
+  const timerProgramaciones = setInterval(revisarProgramaciones, 60 * 1000);
+
+  // C-07: Express 4 no captura los errores de funciones async. Una promesa rechazada sin
+  // manejar terminaría el proceso (Node 15+): se registra y el servidor sigue atendiendo.
+  process.on('unhandledRejection', (motivo) => {
+    console.error('❌ Promesa rechazada sin manejar:', motivo);
+  });
+
+  // C-08: cierre ordenado (despliegue, reinicio del servicio, Ctrl+C). Se dejan de aceptar
+  // peticiones, se esperan las que están en curso y se cierra el pool.
+  let cerrando = false;
+  const cerrar = (senal) => {
+    if (cerrando) return;
+    cerrando = true;
+    console.log(`\n${senal}: cerrando el servidor…`);
+    clearInterval(timerInsumos);
+    clearInterval(timerProgramaciones);
+    servidor.close(async () => {
+      await pool.end().catch(() => {});
+      process.exit(0);
+    });
+    setTimeout(() => process.exit(1), 10000).unref(); // si algo se cuelga, no esperar más
+  };
+  process.on('SIGTERM', () => cerrar('SIGTERM'));
+  process.on('SIGINT',  () => cerrar('SIGINT'));
 }
 
 module.exports = app;

@@ -1,5 +1,4 @@
 import { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
 import { API } from '../../services/api';
 import { formatMoney, fechaLocal } from '../../utils/format';
 import { exportarCSV } from '../../utils/csvExport';
@@ -11,6 +10,7 @@ import Pagination, { EmptyRow } from '../../components/Pagination';
 import BotonExportar from '../../components/BotonExportar';
 import { usePagination } from '../../hooks/usePagination';
 import { ocultaMontos } from '../../utils/user';
+import ReportesNav from '../../components/ReportesNav';
 
 /**
  * Reporte de Mermas — conversión 1:1 de reportes/mermas.html.
@@ -108,16 +108,13 @@ export default function ReporteMermas() {
 
   return (
     <>
+      <ReportesNav />
       <div className="page-header">
         <div>
           <div className="page-title">Reporte de Mermas</div>
           <div className="page-subtitle">Pérdidas, daños y productos no recuperables por período</div>
         </div>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          <Link to="/reportes/movimientos" className="btn btn-ghost">← Reportes</Link>
-          {verCosto && <Link to="/reportes/valorizacion" className="btn btn-ghost">Valorización</Link>}
-          <Link to="/reportes/consumo-area" className="btn btn-ghost">Consumo por área</Link>
-          <Link to="/reportes/programacion" className="btn btn-ghost">Programación</Link>
           {verCosto && (
             <>
               <BotonExportar id="btn-exportar" onClick={exportar} filas={res ? res.mermas.length : null} />

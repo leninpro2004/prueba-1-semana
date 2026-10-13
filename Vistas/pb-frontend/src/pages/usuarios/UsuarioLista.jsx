@@ -3,7 +3,8 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { API } from '../../services/api';
 import { usePageTitle } from '../../contexts/TitleContext';
 import { fechaLocal, fechaHoraLocal, datetimeLocal } from '../../utils/format';
-import Alert, { useAlert } from '../../components/Alert';
+import { ROLES_USUARIO, getRoleLabel } from '../../utils/user';
+import Alert, { useAlert, AvisoCerrable } from '../../components/Alert';
 import Pagination, { EmptyRow } from '../../components/Pagination';
 import { usePagination } from '../../hooks/usePagination';
 import { useConfirm } from '../../hooks/useDialog';
@@ -25,7 +26,8 @@ export default function UsuarioLista() {
   const confirm = useConfirm();
   const [params] = useSearchParams();
 
-  const [tab, setTab] = useState('usuarios');
+  // B-06: una notificación de seguridad abre directo la auditoría (?tab=auditoria)
+  const [tab, setTab] = useState(params.get('tab') === 'auditoria' ? 'auditoria' : 'usuarios');
   const [q, setQ] = useState('');
   const [rol, setRol] = useState('');
   const [estado, setEstado] = useState('');
@@ -68,6 +70,11 @@ export default function UsuarioLista() {
   }, [q, rol, estado, showAlert]);
 
   useEffect(() => { filtrarUsuarios(); }, [filtrarUsuarios]);
+  // B-04: las programaciones las aplica el backend cada minuto; la lista se recarga para mostrarlas
+  useEffect(() => {
+    const t = setInterval(filtrarUsuarios, 60 * 1000);
+    return () => clearInterval(t);
+  }, [filtrarUsuarios]);
   useEffect(() => { API.usuarios.listar().then(u => setUsuariosAud(u || [])).catch(() => {}); }, []);
   useEffect(() => { API.auditoria.acciones().then(a => setAcciones(Array.isArray(a) ? a : [])).catch(() => {}); }, []);
 
@@ -116,7 +123,7 @@ export default function UsuarioLista() {
 
   /* ── Editar permisos ── */
   const abrirEditarPermisos = (u) => {
-    const estadoNorm = esActivo(u.estado?.toLowerCase()) ? 'activa' : 'inactivo';
+    const estadoNorm = esActivo(u.estado?.toLowerCase()) ? 'activo' : 'inactivo';
     setEdit({ id: u.id, nombre: u.nombre_completo || u.username || '', rol: u.rol, estado: estadoNorm, origRol: u.rol, origEstado: estadoNorm, detalle: '', alerta: null });
   };
 
@@ -131,6 +138,27 @@ export default function UsuarioLista() {
       setEdit(null);
       filtrarUsuarios();
       showAlert('success', 'Permisos actualizados. Cambio registrado en auditoría.');
+    } catch (err) {
+      // B-03: tiene OT abiertas → se ofrece reasignarlas a un usuario activo
+      if (err.payload?.codigo === 'OT_PENDIENTES') {
+        const lista = await API.usuarios.listar().catch(() => []);
+        const destinos = (Array.isArray(lista) ? lista : []).filter(u => u.id !== edit.id && esActivo(u.estado?.toLowerCase()));
+        setEdit({ ...edit, alerta: { type: 'warning', msg: err.message }, otPendientes: err.payload.pendientes, destinos, reasignarA: '' });
+        return;
+      }
+      setEdit({ ...edit, alerta: { type: 'danger', msg: err.message } });
+    }
+  };
+
+  /* B-03: reasigna las OT abiertas del usuario y vuelve a guardar el cambio de estado */
+  const reasignarYGuardar = async () => {
+    if (!edit.reasignarA) { setEdit({ ...edit, alerta: { type: 'danger', msg: 'Elija a quién reasignar las OT.' } }); return; }
+    try {
+      const r = await API.usuarios.reasignarOT(edit.id, Number(edit.reasignarA));
+      await API.usuarios.editarPermisos(edit.id, { rol: edit.rol, estado: edit.estado });
+      setEdit(null);
+      filtrarUsuarios();
+      showAlert('success', `${r.message} Permisos actualizados. Cambios registrados en auditoría.`);
     } catch (err) {
       setEdit({ ...edit, alerta: { type: 'danger', msg: err.message } });
     }
@@ -223,7 +251,7 @@ export default function UsuarioLista() {
               </select>
               <select className="form-control" id="filter-estado" style={{ width: 140 }} value={estado} onChange={e => setEstado(e.target.value)}>
                 <option value="">Todos los estados</option>
-                <option value="activa">Activos</option>
+                <option value="activo">Activos</option>
                 <option value="inactivo">Inactivos</option>
               </select>
             </div>
@@ -248,7 +276,7 @@ export default function UsuarioLista() {
                           </div>
                         </td>
                         <td style={{ fontSize: 13, color: 'var(--orange)' }}>{u.correo || '—'}</td>
-                        <td><span className={`badge ${u.rol === 'gerencia' ? 'badge-orange' : 'badge-info'}`}>{u.rol}</span></td>
+                        <td><span className={`badge ${u.rol === 'gerencia' ? 'badge-orange' : 'badge-info'}`}>{getRoleLabel(u)}</span></td>
                         <td>
                           <span className={`badge ${esActivo(u.estado) ? 'badge-success' : 'badge-gray'}`}>{esActivo(u.estado) ? 'activa' : 'inactiva'}</span>
                           {/* OPUS-8: programación pendiente, con opción de cancelarla */}
@@ -333,14 +361,17 @@ export default function UsuarioLista() {
                       <td><span className="td-mono" style={{ fontSize: 11 }}>{fechaHoraLocal(a.timestamp, true)}</span></td>
                       <td style={{ fontSize: 13, fontWeight: 500 }}>{a.usuario || '—'}</td>
                       <td><span className="badge badge-gray">{a.accion || '—'}</span></td>
-                      <td style={{ fontSize: 12, color: 'var(--gray)' }}>{a.detalle || '—'}</td>
+                      <td style={{ fontSize: 12, color: 'var(--gray)' }}>
+                        {a.detalle || '—'}
+                        {a.ip && <div className="td-mono" style={{ fontSize: 11 }}>IP {a.ip}</div>}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
             {!audError && <Pagination {...pagA} />}
-            <p style={{ fontSize: 11, color: 'var(--gray)', marginTop: 12 }}>Los registros de auditoría son inmutables y no pueden ser modificados ni eliminados (FR-60).</p>
+            <p style={{ fontSize: 11, color: 'var(--gray)', marginTop: 12 }}>Los registros de auditoría son inmutables y no pueden ser modificados ni eliminados.</p>
           </div>
         </div>
       )}
@@ -357,20 +388,32 @@ export default function UsuarioLista() {
               <button className="modal-close" onClick={() => setEdit(null)}><IconX /></button>
             </div>
             <div className="modal-body">
-              <div id="alert-modal">{edit.alerta && <div className={`alert alert-${edit.alerta.type}`} style={{ fontSize: 12 }}>{edit.alerta.msg}</div>}</div>
+              <div id="alert-modal">{edit.alerta && <AvisoCerrable className={`alert alert-${edit.alerta.type}`} style={{ fontSize: 12 }}>{edit.alerta.msg}</AvisoCerrable>}</div>
+              {edit.otPendientes > 0 && (
+                <div className="form-group" id="reasignar-ot">
+                  <label className="form-label" htmlFor="edit-reasignar">Reasignar sus {edit.otPendientes} OT abiertas a</label>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <select className="form-control" id="edit-reasignar" value={edit.reasignarA}
+                      onChange={e => setEdit({ ...edit, reasignarA: e.target.value })}>
+                      <option value="">Elija un usuario activo…</option>
+                      {edit.destinos.map(u => <option key={u.id} value={u.id}>{u.nombre_completo ? `${u.nombre_completo} (${u.username})` : u.username}</option>)}
+                    </select>
+                    <button className="btn btn-primary" id="btn-reasignar-guardar" onClick={reasignarYGuardar}>Reasignar y guardar</button>
+                  </div>
+                </div>
+              )}
               <div className="form-row">
                 <div className="form-group">
                   <label className="form-label">Rol <span style={{ color: 'var(--danger)' }}>*</span></label>
                   <select className="form-control" id="edit-rol" value={edit.rol} onChange={e => setEdit({ ...edit, rol: e.target.value })}>
-                    <option value="gerencia">Gerencia</option>
-                    <option value="jop">JOP</option>
+                    {ROLES_USUARIO.map(r => <option key={r.valor} value={r.valor}>{r.etiqueta}</option>)}
                   </select>
-                  <p style={{ fontSize: 11, color: 'var(--gray)', marginTop: 4 }}>Gerencia: acceso completo · JOP: sin visualización de costos</p>
+                  <p style={{ fontSize: 11, color: 'var(--gray)', marginTop: 4 }}>{ROLES_USUARIO.find(r => r.valor === edit.rol)?.ayuda}</p>
                 </div>
                 <div className="form-group">
                   <label className="form-label">Estado <span style={{ color: 'var(--danger)' }}>*</span></label>
                   <select className="form-control" id="edit-estado" value={edit.estado} onChange={e => setEdit({ ...edit, estado: e.target.value })}>
-                    <option value="activa">Activo</option>
+                    <option value="activo">Activo</option>
                     <option value="inactivo">Inactivo</option>
                   </select>
                 </div>
@@ -381,10 +424,10 @@ export default function UsuarioLista() {
                   value={edit.detalle} onChange={e => setEdit({ ...edit, detalle: e.target.value })} />
                 <div style={{ fontSize: 11, color: '#aaa', textAlign: 'right', marginTop: 2 }} id="edit-detalle-count">{edit.detalle.length}/500</div>
               </div>
-              <div className="alert alert-info" style={{ fontSize: 12 }}>
+              <AvisoCerrable className="alert alert-info" style={{ fontSize: 12 }}>
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" width="14" height="14"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-                Este cambio se registrará automáticamente en auditoría con fecha, hora e identificador de quien lo realizó (FR-61).
-              </div>
+                Este cambio se registrará automáticamente en auditoría con fecha, hora e identificador de quien lo realizó.
+              </AvisoCerrable>
             </div>
             <div className="modal-footer">
               <button className="btn btn-ghost" onClick={() => setEdit(null)}>Cancelar</button>
@@ -406,10 +449,10 @@ export default function UsuarioLista() {
               <button className="modal-close" onClick={() => setPass(null)}><IconX /></button>
             </div>
             <div className="modal-body">
-              <div className="alert alert-warning" style={{ fontSize: 12, marginBottom: 16 }}>
+              <AvisoCerrable className="alert alert-warning" style={{ fontSize: 12, marginBottom: 16 }}>
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" width="14" height="14"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
                 Se generará una contraseña temporal alfanumérica. Debe comunicarla personalmente al usuario. Al iniciar sesión con la clave temporal, el sistema exigirá cambiarla.
-              </div>
+              </AvisoCerrable>
               <div className="form-group">
                 <label className="form-label">Usuario</label>
                 <input className="form-control" id="pass-nombre" readOnly value={pass.nombre} style={{ background: 'var(--gray-light)' }} />

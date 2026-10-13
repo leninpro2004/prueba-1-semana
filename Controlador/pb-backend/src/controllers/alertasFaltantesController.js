@@ -207,6 +207,7 @@ async function generarAlertasFaltantes(opts = {}) {
       tipo: 'alerta_faltante',
       mensaje: `Se detectaron ${generadas} producto(s) con stock insuficiente para pedidos próximos.`,
       origen: 'alertas_faltantes',
+      ruta: '/alertas/faltantes',
       rol: 'jop'
     });
   }
@@ -518,6 +519,7 @@ async function emitirSolicitud(req, res) {
       tipo: 'solicitud_compra',
       mensaje: `Solicitud de compra de emergencia emitida para ${alerta[0].sku}`,
       origen: 'alertas_faltantes',
+      ruta: '/alertas/faltantes',
       rol: 'gerencia'
     });
 

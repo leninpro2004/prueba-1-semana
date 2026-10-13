@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { API } from '../../services/api';
+import { ROLES_USUARIO } from '../../utils/user';
 import { usePageTitle } from '../../contexts/TitleContext';
-import Alert, { useAlert } from '../../components/Alert';
+import Alert, { useAlert, AvisoCerrable } from '../../components/Alert';
+import InputPassword from '../../components/InputPassword';
 
 const EMAIL_RE = /^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$/;
 const OK = 'var(--success)', BAD = 'var(--danger)';
@@ -213,8 +215,7 @@ export default function UsuarioCrear() {
               <label className="form-label">Rol <span style={{ color: 'var(--danger)' }}>*</span></label>
               <select className="form-control" id="f-rol" value={rol} style={inputStyle('rol')} onChange={e => { setRol(e.target.value); validarCampo('rol', e.target.value); }}>
                 <option value="" disabled>Seleccionar rol...</option>
-                <option value="gerencia">Gerencia</option>
-                <option value="jop">JOP</option>
+                {ROLES_USUARIO.map(r => <option key={r.valor} value={r.valor}>{r.etiqueta} — {r.ayuda}</option>)}
               </select>
               {hint('rol')}
             </div>
@@ -254,13 +255,13 @@ export default function UsuarioCrear() {
               <div className="form-row">
                 <div className="form-group">
                   <label className="form-label">Contraseña <span style={{ color: 'var(--danger)' }}>*</span></label>
-                  <input className="form-control" id="f-pass" type="password" placeholder="Mínimo 8 caracteres" value={pass1} style={inputStyle('pass')}
+                  <InputPassword className="form-control" id="f-pass" placeholder="Mínimo 8 caracteres" value={pass1} style={inputStyle('pass')}
                     onChange={e => { setPass1(e.target.value); validarPass(e.target.value, pass2); }} />
                   {hint('pass')}
                 </div>
                 <div className="form-group">
                   <label className="form-label">Confirmar contraseña <span style={{ color: 'var(--danger)' }}>*</span></label>
-                  <input className="form-control" id="f-pass2" type="password" placeholder="Repite la contraseña" value={pass2} style={inputStyle('pass2')}
+                  <InputPassword className="form-control" id="f-pass2" placeholder="Repite la contraseña" value={pass2} style={inputStyle('pass2')}
                     onChange={e => { setPass2(e.target.value); validarPass(pass1, e.target.value); }} />
                   {hint('pass2')}
                 </div>
@@ -272,10 +273,10 @@ export default function UsuarioCrear() {
                 </div>
                 <div id="pass-strength-label" style={{ fontSize: 11, color: 'var(--gray)', marginTop: 4 }}>{labels[score] || ''}</div>
               </div>
-              <div className="alert alert-info" style={{ fontSize: 12, marginBottom: 0 }}>
+              <AvisoCerrable className="alert alert-info" style={{ fontSize: 12, marginBottom: 0 }}>
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" width="14" height="14"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
                 El usuario deberá cambiar su contraseña en el primer inicio de sesión. Se recomienda notificarle por email.
-              </div>
+              </AvisoCerrable>
             </div>
           )}
 
@@ -329,7 +330,7 @@ export default function UsuarioCrear() {
             <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--gray)', textTransform: 'uppercase', letterSpacing: '.5px', marginBottom: 8 }}>Roles disponibles</div>
             <div style={{ fontSize: 12, color: 'var(--gray)', lineHeight: 1.7 }}>
               <div><strong>Gerencia:</strong> acceso completo incluyendo costos y administración de usuarios.</div>
-              <div style={{ marginTop: 6 }}><strong>JOP:</strong> acceso operativo sin visualización de datos monetarios (FR-59).</div>
+              <div style={{ marginTop: 6 }}><strong>JOP:</strong> acceso operativo sin visualización de datos monetarios.</div>
             </div>
           </div>
         </div>

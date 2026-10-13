@@ -4,7 +4,7 @@ const { api, bajar } = require('./helpers/api');
 const db = require('./helpers/db');
 
 /**
- * R1: pestaña Consumo de la OT, desde la receta (docs/sprint/decisiones.md, R1).
+ * R1: pestaña Consumo de la OT, desde la receta (docs/incremento-3-4/decisiones.md, R1).
  *
  * Lo que protegen:
  *  - "Guardar" mueve el stock SOLO por la diferencia con lo ya registrado; quitar un
@@ -41,6 +41,11 @@ const movimientosOT = (ot = 3) => db.contar('inventario.movimiento_inventario', 
 const conReceta = (fifo, crit, extra = []) => ({
   receta_id: 1, cantidad_puertas: 2,
   lineas: [{ sku: 'MAT-FIFO', estimado: 5, real: fifo }, { sku: 'MAT-CRIT', estimado: 8, real: crit }, ...extra],
+});
+
+/** F-05: el mismo cuerpo con motivo en cada línea y general (reajustes y quitados). */
+const conMotivo = (body, motivo = 'Ajuste de prueba') => ({
+  ...body, motivo, lineas: body.lineas.map(l => ({ ...l, motivo })),
 });
 
 describe('Receta precargada', () => {
@@ -82,7 +87,7 @@ describe('Guardar consumo', () => {
   test('corregir y volver a guardar mueve solo la diferencia', async () => {
     await guardar(conReceta(6, 8));
     const movs = await movimientosOT();
-    const r = await guardar(conReceta(4, 8));                       // FIFO 6 → 4: devuelve 2; CRIT igual
+    const r = await guardar(conMotivo(conReceta(4, 8)));            // FIFO 6 → 4: devuelve 2; CRIT igual
     assert.equal(r.status, 200);
     assert.deepEqual(await db.stockDe('MAT-FIFO'), { fisica: 26, reservada: 5 });
     assert.deepEqual(await db.stockDe('MAT-CRIT'), { fisica: 0, reservada: 0 });
@@ -91,7 +96,7 @@ describe('Guardar consumo', () => {
 
   test('quitar un material ya consumido lo devuelve a bodega y lo saca de la OT', async () => {
     await guardar(conReceta(6, 8));
-    const r = await guardar({ receta_id: 1, cantidad_puertas: 2, lineas: [{ sku: 'MAT-FIFO', estimado: 5, real: 6 }] });
+    const r = await guardar(conMotivo({ receta_id: 1, cantidad_puertas: 2, lineas: [{ sku: 'MAT-FIFO', estimado: 5, real: 6 }] }));
     assert.equal(r.status, 200);
     assert.deepEqual(r.body.quitados, ['MAT-CRIT']);
     assert.deepEqual(await db.stockDe('MAT-CRIT'), { fisica: 8, reservada: 0 });
@@ -102,6 +107,68 @@ describe('Guardar consumo', () => {
     await guardar(conReceta(5, 8, [{ sku: 'MAT-UNO', estimado: null, real: 1 }]));
     assert.deepEqual((await consumoOT())['MAT-UNO'], { est: null, real: 1 });
     assert.deepEqual(await db.stockDe('MAT-UNO'), { fisica: 0, reservada: 0 });
+  });
+});
+
+describe('F-05: consumo extra o menor con motivo', () => {
+  /** Descripción del último movimiento de la OT para un SKU. */
+  const ultimaDescripcion = async (sku) => (await db.query(
+    `SELECT movimiento_inventario_descripcion_motivo AS d FROM inventario.movimiento_inventario
+     WHERE orden_trabajo_id_orden = 3 AND material_sku = $1
+     ORDER BY movimiento_inventario_id_movimiento DESC LIMIT 1`, [sku]
+  )).rows[0]?.d;
+
+  test('el primer registro no pide motivo', async () => {
+    const r = await guardar(conReceta(5, 8));
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+  });
+
+  test('reajustar un real ya guardado sin motivo → 400 y no se mueve nada', async () => {
+    await guardar(conReceta(5, 8));
+    const movs = await movimientosOT();
+    const antes = await db.stockDe('MAT-FIFO');
+
+    const r = await guardar(conReceta(6, 8));                       // FIFO 5 → 6 sin motivo
+
+    assert.equal(r.status, 400);
+    assert.deepEqual(r.body.errores.map(e => [e.sku, e.campo]), [['MAT-FIFO', 'motivo']]);
+    assert.deepEqual(await db.stockDe('MAT-FIFO'), antes);
+    assert.equal((await consumoOT())['MAT-FIFO'].real, 5);
+    assert.equal(await movimientosOT(), movs);
+  });
+
+  test('con motivo mueve solo la diferencia y el movimiento lleva el motivo', async () => {
+    await guardar(conReceta(5, 8));
+    const r = await guardar({
+      receta_id: 1, cantidad_puertas: 2,
+      lineas: [{ sku: 'MAT-FIFO', estimado: 5, real: 6.2, motivo: 'Se cortó mal' }, { sku: 'MAT-CRIT', estimado: 8, real: 8 }],
+    });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.deepEqual(await db.stockDe('MAT-FIFO'), { fisica: 23.8, reservada: 5 });   // 30 − 6,2
+    assert.match(await ultimaDescripcion('MAT-FIFO'), /\(5 → 6\.2\): Se cortó mal/);
+  });
+
+  test('también un consumo menor (devuelve a bodega) pide motivo', async () => {
+    await guardar(conReceta(5, 8));
+    assert.equal((await guardar(conReceta(5, 7))).status, 400);
+    const r = await guardar({ ...conReceta(5, 7), lineas: [conReceta(5, 7).lineas[0], { ...conReceta(5, 7).lineas[1], motivo: 'Sobró una plancha' }] });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.deepEqual(await db.stockDe('MAT-CRIT'), { fisica: 1, reservada: 0 });
+    assert.match(await ultimaDescripcion('MAT-CRIT'), /Sobró una plancha/);
+  });
+
+  test('quitar un material con consumo pide el motivo general', async () => {
+    await guardar(conReceta(5, 8));
+    const soloFifo = { receta_id: 1, cantidad_puertas: 2, lineas: [{ sku: 'MAT-FIFO', estimado: 5, real: 5 }] };
+
+    const sin = await guardar(soloFifo);
+    assert.equal(sin.status, 400);
+    assert.deepEqual(await db.stockDe('MAT-CRIT'), { fisica: 0, reservada: 0 });
+
+    const con = await guardar({ ...soloFifo, motivo: 'No se usó en esta OT' });
+    assert.equal(con.status, 200, JSON.stringify(con.body));
+    assert.deepEqual(await db.stockDe('MAT-CRIT'), { fisica: 8, reservada: 0 });
+    assert.match(await ultimaDescripcion('MAT-CRIT'), /No se usó en esta OT/);
   });
 });
 
@@ -118,11 +185,11 @@ describe('Rechazos: no se mueve nada', () => {
   test('material inactivo: no se registra ni corrige; si no cambia, se puede guardar igual', async () => {
     await guardar(conReceta(5, 2));
     await db.query(`UPDATE inventario.material SET material_estado = 'inactivo' WHERE material_sku = 'MAT-CRIT'`);
-    const r = await guardar(conReceta(5, 3));
+    const r = await guardar(conMotivo(conReceta(5, 3)));
     assert.equal(r.status, 400);
     assert.match(r.body.error, /inactivo/);
     assert.deepEqual(await db.stockDe('MAT-CRIT'), { fisica: 6, reservada: 0 });
-    assert.equal((await guardar(conReceta(6, 2))).status, 200);      // CRIT sin cambio, FIFO sí
+    assert.equal((await guardar(conMotivo(conReceta(6, 2)))).status, 200);   // CRIT sin cambio, FIFO sí
   });
 
   test('herramienta, SKU inexistente, repetido o real inválido → 400 con todos los errores', async () => {
@@ -194,7 +261,9 @@ describe('Pinturas y receta', () => {
     const otra = await api('POST', '/api/recetas', {
       body: { nombre: 'Otra puerta', codigo: 'PB-OTRA', materiales: [{ sku: 'MAT-UNO', cantidad_base: 1, area_id: 1 }] },
     });
-    const body = { receta_id: otra.body.id, cantidad_puertas: 1, lineas: [{ sku: 'MAT-UNO', estimado: 1, real: 1 }] };
+    // La receta anterior tenía consumo: quitarla pide motivo (F-05)
+    const body = { receta_id: otra.body.id, cantidad_puertas: 1, motivo: 'Cambio de receta',
+                   lineas: [{ sku: 'MAT-UNO', estimado: 1, real: 1 }] };
     let r = await guardar(body);
     assert.equal(r.status, 409);
     assert.equal(r.body.codigo, 'RECETA_DISTINTA');

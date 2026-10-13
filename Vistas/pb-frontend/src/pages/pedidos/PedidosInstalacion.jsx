@@ -63,7 +63,7 @@ export default function PedidosInstalacion() {
       <div className="page-header">
         <div>
           <div className="page-title">Pedidos de instalación</div>
-          <div className="page-subtitle">Insumos que viajan a terreno con cada venta: vinculación y despacho (CU-120)</div>
+          <div className="page-subtitle">Insumos que viajan a terreno con cada venta: vinculación y despacho</div>
         </div>
         <Link to="/instalacion/trazabilidad" className="btn btn-secondary">Trazabilidad</Link>
       </div>

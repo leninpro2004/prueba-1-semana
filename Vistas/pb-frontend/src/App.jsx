@@ -43,6 +43,7 @@ import ReporteProgramacion from './pages/reportes/ReporteProgramacion';
 import ReporteRotacion from './pages/reportes/ReporteRotacion';
 import ReporteHistorico from './pages/reportes/ReporteHistorico';
 import ReporteDesviaciones from './pages/reportes/ReporteDesviaciones';
+import ReportesIndice from './pages/reportes/ReportesIndice';
 import RecetaLista from './pages/recetas/RecetaLista';
 import RecetaEditor from './pages/recetas/RecetaEditor';
 import ReglasIntegracion from './pages/integracion/ReglasIntegracion';
@@ -50,6 +51,9 @@ import SimuladorModulo from './pages/integracion/SimuladorModulo';
 import PedidosInstalacion from './pages/pedidos/PedidosInstalacion';
 import PedidoInstalacionDetalle from './pages/pedidos/PedidoInstalacionDetalle';
 import TrazabilidadPedido from './pages/pedidos/TrazabilidadPedido';
+import Catalogos from './pages/catalogos/Catalogos';
+import ProyectosOT from './pages/ordenes/ProyectosOT';
+import FirmaGerencia from './components/FirmaGerencia';
 
 export default function App() {
   return (
@@ -97,6 +101,7 @@ export default function App() {
                 <Route path="/instalacion/:id"      element={<PedidoInstalacionDetalle />} />
 
                 <Route path="/ordenes"            element={<OrdenLista />} />
+                <Route path="/ordenes/proyectos"  element={<ProyectosOT />} />   {/* F-24, antes de /:id */}
                 <Route path="/ordenes/:id"        element={<OrdenDetalle />} />
                 <Route path="/ordenes/:id/costos" element={<OrdenCostos />} />
 
@@ -105,6 +110,7 @@ export default function App() {
                 <Route path="/recetas/nueva" element={<RecetaEditor />} />
                 <Route path="/recetas/:id"   element={<RecetaEditor key="editar" />} />
 
+                <Route path="/reportes"              element={<ReportesIndice />} />   {/* B-08: índice */}
                 <Route path="/reportes/movimientos"  element={<ReporteMovimientos />} />
                 <Route path="/reportes/mermas"       element={<ReporteMermas />} />
                 <Route path="/reportes/valorizacion" element={<ReporteValorizacion />} />
@@ -123,6 +129,8 @@ export default function App() {
 
                 <Route path="/usuarios"       element={<UsuarioLista />} />
                 <Route path="/usuarios/crear" element={<UsuarioCrear />} />
+                {/* B-14: mantenedor de catálogos (solo gerencia; F-04 suma áreas, unidades y motivos) */}
+                <Route path="/catalogos" element={<Catalogos />} />
 
                 {/* CU-108: reglas de integración entre módulos (gerencia y administrador) */}
                 <Route path="/integracion" element={<ReglasIntegracion />} />
@@ -133,6 +141,8 @@ export default function App() {
 
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
+          {/* F-11: modal de firma de gerencia para las acciones sensibles (lo abre apiFetch ante un 428) */}
+          <FirmaGerencia />
         </DialogProvider>
       </AuthProvider>
     </BrowserRouter>

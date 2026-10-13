@@ -136,7 +136,7 @@ describe('Reservar para venta (CU-131)', () => {
     const jwt = require('jsonwebtoken');
     const { levantar } = require('./helpers/api');
     const url = await levantar();
-    const tecnico = jwt.sign({ id: 2, username: 'jop.test', rol: 'tecnico' }, process.env.JWT_SECRET, { expiresIn: '5m' });
+    const tecnico = jwt.sign({ id: 3, username: 'tecnico.test', rol: 'tecnico' }, process.env.JWT_SECRET, { expiresIn: '5m' });
     const r = await fetch(url + '/api/reservas/ventas/1', {
       method: 'POST', headers: { Authorization: `Bearer ${tecnico}`, 'Content-Type': 'application/json' }, body: '{}' });
     assert.equal(r.status, 403);
@@ -221,7 +221,7 @@ describe('Gestionar reservas (CU-132)', () => {
     const jwt = require('jsonwebtoken');
     const { levantar } = require('./helpers/api');
     const url = await levantar();
-    const tecnico = jwt.sign({ id: 2, username: 'jop.test', rol: 'tecnico' }, process.env.JWT_SECRET, { expiresIn: '5m' });
+    const tecnico = jwt.sign({ id: 3, username: 'tecnico.test', rol: 'tecnico' }, process.env.JWT_SECRET, { expiresIn: '5m' });
     for (const accion of ['liberar', 'anular']) {
       const r = await fetch(`${url}/api/reservas/1/${accion}`, { method: 'PUT', headers: { Authorization: `Bearer ${tecnico}` } });
       assert.equal(r.status, 403);

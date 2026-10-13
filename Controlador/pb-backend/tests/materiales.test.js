@@ -346,3 +346,45 @@ describe('Crear producto con o sin presentacion (CU-19)', () => {
     assert.equal(await db.contar('inventario.material', "material_sku = 'CU19-LARGA'"), 0);
   });
 });
+
+/* -- F-14: historial de precios por mes ---------------------------------- */
+
+describe('Precio por mes (F-14)', () => {
+  // Años sin datos en la semilla, para no depender de ella
+  async function precio(fecha, valor, proveedor = 1) {
+    await db.query(
+      `INSERT INTO inventario.historial_precio_material (material_sku, proveedor_id_proveedor, precio_unitario, fecha_vigencia_desde)
+       VALUES ('MAT-FIFO', $1, $2, $3)`, [proveedor, valor, fecha]);
+  }
+  const porMes = (qs) => api('GET', `/api/materiales/MAT-FIFO/precios?agrupar=mes&${qs}`);
+
+  test('12 meses; con datos solo en marzo y abril, y en el mes gana la última compra', async () => {
+    await precio('2031-03-05', 1000);
+    await precio('2031-03-20', 1200, 2);   // la última de marzo, de otro proveedor
+    await precio('2031-04-10', 1100);
+    const r = await porMes('anio=2031');
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.equal(r.body.anio, 2031);
+    assert.deepEqual(r.body.meses, [null, null, 1200, 1100, null, null, null, null, null, null, null, null]);
+    assert.equal(r.body.anterior, null);
+
+    const soloProv1 = await porMes('anio=2031&proveedor_id=1');
+    assert.equal(soloProv1.body.meses[2], 1000, 'con el filtro de proveedor, la última de ese proveedor');
+  });
+
+  test('comparar=1 trae el año anterior', async () => {
+    await precio('2030-03-15', 900);
+    await precio('2031-03-15', 1000);
+    const r = await porMes('anio=2031&comparar=1');
+    assert.equal(r.status, 200);
+    assert.equal(r.body.anterior.anio, 2030);
+    assert.equal(r.body.anterior.meses[2], 900);
+    assert.equal(r.body.meses[2], 1000);
+  });
+
+  test('año inválido → 400; jop no ve precios → 403', async () => {
+    assert.equal((await porMes('anio=31')).status, 400);
+    assert.equal((await porMes('anio=1999')).status, 400);
+    assert.equal((await api('GET', '/api/materiales/MAT-FIFO/precios?agrupar=mes&anio=2031', { rol: 'jop' })).status, 403);
+  });
+});

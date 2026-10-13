@@ -315,6 +315,7 @@ async function generarAlertasAutomaticas() {
         tipo: 'alerta_stock',
         mensaje: `Se generaron ${generadas} alerta(s) de inventario. Revise el panel de alertas.`,
         origen: 'alertas',
+        ruta: '/alertas',
         rol: 'jop'
       });
     } catch (e) {

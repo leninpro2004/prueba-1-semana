@@ -168,6 +168,7 @@ export function BarrasAgrupadas({ labels, series, formato = v => v, svgRef }) {
         return (
           <g key={label}>
             {series.map((s, si) => {
+              if (s.data[gi] == null) return null;   // F-14: sin dato (p. ej. un mes sin compra) no se dibuja
               const v = s.data[gi] || 0;
               const h = max > 0 ? (v / max) * altoUtil : 0;
               return (

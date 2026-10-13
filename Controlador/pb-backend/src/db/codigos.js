@@ -31,4 +31,34 @@ async function generarCodigoInterno(client, sku) {
   return codigo;
 }
 
-module.exports = { generarCodigoInterno, FORMATO_INTERNO };
+/** Minúsculas, sin tildes y con un solo espacio: así se comparan los nombres (igual que el importador). */
+function normalizar(texto) {
+  return String(texto ?? '')
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+/** F-03: prefijo de 3 letras para el SKU: el de la categoría de la clasificación (MAT si no tiene letras). */
+function prefijoSku(texto) {
+  const letras = normalizar(texto).toUpperCase().replace(/[^A-Z]/g, '');
+  return letras.length >= 3 ? letras.slice(0, 3) : 'MAT';
+}
+
+/**
+ * F-03 y F-23b: SKU [CAT]-[NOMBRE]-NNN (máximo 3 + 1 + 6 + 1 + 3 = 14 caracteres; CHECK 4 a 16).
+ * El correlativo sigue al mayor que ya exista con la misma raíz. Recibe el `client` de una transacción.
+ */
+async function generarSku(client, categoria, nombre) {
+  const palabra = normalizar(nombre).toUpperCase().replace(/[^A-Z0-9 ]/g, ' ').trim().split(/\s+/)[0] || 'ITEM';
+  const raiz = `${prefijoSku(categoria)}-${palabra.slice(0, 6)}-`;
+  const { rows } = await client.query(
+    `SELECT COALESCE(MAX(substring(material_sku FROM $2)::int), 0) AS ultimo
+     FROM material WHERE material_sku LIKE $1 AND material_sku ~ $3`,
+    [raiz + '%', `^${raiz}(\\d+)$`, `^${raiz}\\d+$`]
+  );
+  const siguiente = rows[0].ultimo + 1;
+  if (siguiente > 999) throw new Error(`Se agotaron los correlativos de ${raiz}`);
+  return raiz + String(siguiente).padStart(3, '0');
+}
+
+module.exports = { generarCodigoInterno, FORMATO_INTERNO, generarSku, prefijoSku, normalizar };

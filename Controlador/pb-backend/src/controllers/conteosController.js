@@ -712,7 +712,7 @@ async function generarAlertas(req, res) {
       const conteo = await cabeceraConteo(q, id, true);
       if (!conteo) throw new ErrorNegocio(404, { error: 'Conteo no encontrado' });
       if (conteo.estado !== 'procesado') {
-        throw new ErrorNegocio(400, { error: 'Primero hay que registrar las diferencias del conteo (CU-43).' });
+        throw new ErrorNegocio(400, { error: 'Primero hay que registrar las diferencias del conteo.' });
       }
       const { rows: ya } = await q(
         `SELECT COUNT(*)::int AS n FROM alerta_inventario WHERE conteo_ciclico_id_conteo = $1`, [id]
@@ -822,6 +822,7 @@ async function generarAlertas(req, res) {
         tipo: 'diferencia_inventario',
         mensaje: `Conteo #${id} (${r.bodega}): ${r.criticas} diferencia(s) crítica(s) de inventario. Revise el panel de alertas.`,
         origen: 'conteos',
+        ruta: `/conteos/${id}/diferencias`,
         rol: 'gerencia',
       });
     }
@@ -869,7 +870,7 @@ async function ajustar(req, res) {
       const conteo = await cabeceraConteo(q, id, true);
       if (!conteo) throw new ErrorNegocio(404, { error: 'Conteo no encontrado' });
       if (conteo.estado !== 'procesado') {
-        throw new ErrorNegocio(400, { error: 'Primero hay que registrar las diferencias del conteo (CU-43).' });
+        throw new ErrorNegocio(400, { error: 'Primero hay que registrar las diferencias del conteo.' });
       }
       const bodegaId = conteo.bodega_id;
 

@@ -27,15 +27,50 @@ const ICONS = {
 };
 
 /**
- * <Alert type="danger|success|warning|info" message="..." />
+ * <Alert type="danger|success|warning|info" message="..." onClose={fn} />
  * Reemplaza el markup que generaba showAlert(). `message` puede ser string o JSX.
+ * B-07: con `onClose` muestra una × para cerrarlo (sin ella, un error quedaba fijo en la pantalla).
  */
-export default function Alert({ type = 'info', message, style }) {
+export default function Alert({ type = 'info', message, style, onClose }) {
   if (!message) return null;
   return (
     <div className={`alert alert-${type}`} style={{ display: 'flex', alignItems: 'center', gap: 8, ...style }}>
       {ICONS[type] || null}
-      <span>{message}</span>
+      <span style={{ flex: 1 }}>{message}</span>
+      {onClose && (
+        <button type="button" onClick={onClose} aria-label="Cerrar aviso" title="Cerrar aviso"
+          style={{ background: 'none', border: 'none', color: 'inherit', cursor: 'pointer', fontSize: 18, lineHeight: 1, padding: '0 2px', opacity: 0.7, alignSelf: 'flex-start' }}>
+          ×
+        </button>
+      )}
+    </div>
+  );
+}
+
+/**
+ * B-07: aviso fijo de una pantalla (informativo, validación o error de un modal) que se puede cerrar.
+ * Reemplaza a <div className="alert …"> conservando su clase, estilo y contenido. Vuelve a aparecer al
+ * volver a la pantalla, cuando la condición que lo muestra desaparece y se repite, o cuando cambia su texto
+ * (otro error, otra cantidad): recuerda el texto que se cerró, no solo que se cerró.
+ */
+function textoDe(children) {
+  if (typeof children === 'string' || typeof children === 'number') return String(children);
+  if (Array.isArray(children)) return children.map(textoDe).join('');
+  return '';
+}
+
+export function AvisoCerrable({ className = 'alert alert-info', style, children, ...resto }) {
+  const [cerradoCon, setCerradoCon] = useState(null);   // texto del aviso cuando se cerró
+  const texto = textoDe(children);
+  if (cerradoCon === texto) return null;
+  return (
+    <div className={className} style={{ position: 'relative', paddingRight: 32, ...style }} {...resto}>
+      {children}
+      <button type="button" onClick={() => setCerradoCon(texto)} aria-label="Cerrar aviso" title="Cerrar aviso"
+        style={{ position: 'absolute', top: 6, right: 8, background: 'none', border: 'none', color: 'inherit',
+                 cursor: 'pointer', fontSize: 18, lineHeight: 1, padding: '0 2px', opacity: 0.7 }}>
+        ×
+      </button>
     </div>
   );
 }
@@ -62,5 +97,6 @@ export function useAlert() {
 
   useEffect(() => () => clearTimeout(timerRef.current), []);
 
-  return { alert: alert || {}, showAlert, clearAlert };
+  // B-07: el aviso trae su onClose, así todo <Alert {...alert} /> se puede cerrar con la ×
+  return { alert: alert ? { ...alert, onClose: clearAlert } : {}, showAlert, clearAlert };
 }

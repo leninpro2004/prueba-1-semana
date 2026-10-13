@@ -3,13 +3,9 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { API_BASE } from '../services/api';
 import { useAuth } from '../hooks/useAuth';
 import '../assets/css/login.css';
-
-const ErrorIcon = () => (
-  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-    <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
-    <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
-  </svg>
-);
+import { LOGO } from '../config/marca';
+import Alert from '../components/Alert';
+import InputPassword from '../components/InputPassword';
 
 /**
  * Login — conversión 1:1 de login.html (página standalone, sin layout).
@@ -113,6 +109,11 @@ export default function Login() {
         setForgotAlert({ type: 'danger', content: data.error || 'Error al procesar la solicitud.' });
         return;
       }
+      // B-02: sin autoservicio no hay token; la recuperación la hace gerencia
+      if (data.autoservicio === false) {
+        setForgotAlert({ type: 'info', content: data.message });
+        return;
+      }
       // CU-83 CP2: Si no hay token, el usuario/correo no existe en el sistema
       if (!data.token_recuperacion) {
         setForgotAlert({ type: 'danger', content: `No se encontró una cuenta asociada a "${username}". Verifica el dato ingresado.` });
@@ -192,17 +193,13 @@ export default function Login() {
     <div className="login-wrap">
       <div className="login-card">
 
-        <div className="login-logo">PB</div>
+        <img className="login-logo-img" src={LOGO} alt="Puertas Blindadas" />
         <div className="login-title">Iniciar sesión</div>
         <div className="login-sub">Puertas Blindadas · Sistema de Inventario</div>
 
         <div id="alert-container">
-          {error && (
-            <div className="alert alert-danger" style={{ marginBottom: 16 }}>
-              <ErrorIcon />
-              {error}
-            </div>
-          )}
+          {/* B-07: se cierra con la × (p. ej. "sesión cerrada por inactividad"); también se borra al escribir */}
+          <Alert type="danger" message={error} style={{ marginBottom: 16 }} onClose={() => setError('')} />
         </div>
 
         <form id="login-form" noValidate onSubmit={onSubmit}>
@@ -226,10 +223,9 @@ export default function Login() {
             <label className="form-label" htmlFor="input-pass">
               Contraseña <span className="required">*</span>
             </label>
-            <input
+            <InputPassword
               className="form-control"
               id="input-pass"
-              type="password"
               placeholder="••••••••"
               autoComplete="current-password"
               required
@@ -245,10 +241,6 @@ export default function Login() {
           </button>
         </form>
 
-        <p className="login-demo">
-          Usa tu usuario y contraseña de PostgreSQL
-        </p>
-
       </div>
 
       {/* Modal recuperar contraseña (CU-77) */}
@@ -261,13 +253,13 @@ export default function Login() {
           <div className="modal-header">
             <div>
               <div className="modal-title">Recuperar contraseña</div>
-              <div className="modal-subtitle">Ingresa tu correo electrónico o nombre de usuario para generar un enlace de recuperación</div>
+              <div className="modal-subtitle">Ingresa tu correo electrónico o nombre de usuario para ver cómo recuperar el acceso</div>
             </div>
             <button className="modal-close" onClick={closeForgot}>&#x2715;</button>
           </div>
           <div className="modal-body">
             <div id="forgot-alert">
-              {forgotAlert && <div className={`alert alert-${forgotAlert.type}`}>{forgotAlert.content}</div>}
+              {forgotAlert && <Alert type={forgotAlert.type} message={forgotAlert.content} onClose={() => setForgotAlert(null)} />}
             </div>
             {/* Paso 1: solicitar */}
             {step === 1 && (
@@ -292,7 +284,7 @@ export default function Login() {
                 </div>
                 <div className="form-group">
                   <label className="form-label" htmlFor="forgot-newpass">Nueva contraseña</label>
-                  <input className="form-control" id="forgot-newpass" type="password" placeholder="Mínimo 8 caracteres"
+                  <InputPassword className="form-control" id="forgot-newpass" placeholder="Mínimo 8 caracteres"
                     value={forgotNewPass} onChange={e => setForgotNewPass(e.target.value)} />
                 </div>
               </div>

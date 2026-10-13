@@ -129,7 +129,7 @@ export default function ReglasIntegracion() {
       <div className="page-header">
         <div>
           <div className="page-title">Integración entre módulos</div>
-          <div className="page-subtitle">Roles que pueden registrar movimientos de inventario desde Terreno y Finanzas (CU-108)</div>
+          <div className="page-subtitle">Roles que pueden registrar movimientos de inventario desde Terreno y Finanzas</div>
         </div>
         {datos && !form && (
           <button type="button" className="btn btn-primary" id="btn-nueva-regla" onClick={abrirNueva}>

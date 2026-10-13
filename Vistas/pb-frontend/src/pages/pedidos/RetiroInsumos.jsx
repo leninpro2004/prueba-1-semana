@@ -172,7 +172,7 @@ export default function RetiroInsumos({ ventaId, venta, detalle, onCambio, showA
                         )}
                         {x.retirada > 0 && (
                           <button type="button" className="btn btn-ghost btn-sm" disabled={ocupado !== null}
-                            onClick={() => devolver(x)} title="Lo retirado vuelve a su ubicación (D51)">Devolver a bodega</button>
+                            onClick={() => devolver(x)} title="Lo retirado vuelve a su ubicación">Devolver a bodega</button>
                         )}
                         {!(abierto && !completo) && !(x.retirada > 0) && <span style={{ fontSize: 12, color: 'var(--gray)' }}>—</span>}
                       </div>

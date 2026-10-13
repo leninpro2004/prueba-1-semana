@@ -4,6 +4,8 @@ import { API } from '../services/api';
 import { useAuth } from '../hooks/useAuth';
 import { usePageTitle } from '../contexts/TitleContext';
 import { fechaLocal, hoyLocal } from '../utils/format';
+import { useVista } from '../utils/paleta';
+import DashboardNuevo from './DashboardNuevo';
 
 const IconAlerta = ({ stroke }) => (
   <svg viewBox="0 0 24 24" fill="none" stroke={stroke} strokeWidth="1.8"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
@@ -15,22 +17,27 @@ const tipoCls = (t = '') => t.toLowerCase().includes('entrada') ? 'badge-success
                           : t.toLowerCase().includes('salida')  ? 'badge-danger' : 'badge-gray';
 
 /**
+ * F-25a' (D82, N-14): mientras el cliente compara, "Vista: Nueva" muestra DashboardNuevo.
+ * Cuando elija, queda uno solo.
+ */
+export default function Dashboard() {
+  return useVista() === 'nueva' ? <DashboardNuevo /> : <DashboardActual />;
+}
+
+/**
  * Dashboard — conversión 1:1 de dashboard.html.
  * Los valores iniciales replican el markup estático del HTML hasta que carga la API.
  */
-export default function Dashboard() {
+function DashboardActual() {
   usePageTitle('Dashboard');
   const { user } = useAuth();
   const navigate = useNavigate();
 
-  const [kpis, setKpis] = useState({ urgentes: 2, bajo: 1, productos: 5, movs: 3, riesgo: 1, totalAlertas: 3 });
+  // B-16: null hasta que carguen (se muestra "—"), nunca cifras inventadas
+  const [kpis, setKpis] = useState({ urgentes: null, bajo: null, productos: null, movs: null, riesgo: null, totalAlertas: null });
+  const kpi = (v) => (v ?? '—');
   const [activas, setActivas] = useState(null);   // null = markup estático inicial
   const [ultimos, setUltimos] = useState(null);
-
-  // CU-83.1/83.2: procesar programaciones diferidas (layout.js lo hacía solo en dashboard)
-  useEffect(() => {
-    API.usuarios.procesarProgramaciones().catch(() => {});
-  }, []);
 
   useEffect(() => {
     let cancelado = false;
@@ -92,43 +99,43 @@ export default function Dashboard() {
       <div className="kpi-grid">
         <div className="kpi-card kpi-danger">
           <div className="kpi-label">Alertas urgentes</div>
-          <div className="kpi-value danger" id="kpi-urgentes">{kpis.urgentes}</div>
+          <div className="kpi-value danger" id="kpi-urgentes">{kpi(kpis.urgentes)}</div>
           <div className="kpi-sub">Requieren atención inmediata</div>
           <div className="kpi-icon" style={{ background: '#f8d7da' }}><IconAlerta stroke="#dc3545" /></div>
         </div>
 
         <div className="kpi-card kpi-warning">
           <div className="kpi-label">Stock bajo mínimo</div>
-          <div className="kpi-value warning" id="kpi-bajo">{kpis.bajo}</div>
+          <div className="kpi-value warning" id="kpi-bajo">{kpi(kpis.bajo)}</div>
           <div className="kpi-sub">Productos bajo umbral mínimo</div>
-          <div className="kpi-icon" style={{ background: '#fff4e6' }}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="#fe8f01" strokeWidth="1.8"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></svg>
+          <div className="kpi-icon" style={{ background: 'var(--orange-light)' }}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="var(--orange)" strokeWidth="1.8"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></svg>
           </div>
         </div>
 
         <div className="kpi-card">
           <div className="kpi-label">Productos registrados</div>
-          <div className="kpi-value" id="kpi-productos">{kpis.productos}</div>
+          <div className="kpi-value" id="kpi-productos">{kpi(kpis.productos)}</div>
           <div className="kpi-sub">En catálogo activo</div>
-          <div className="kpi-icon" style={{ background: '#fff4e6' }}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="#fe8f01" strokeWidth="1.8"><path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/></svg>
+          <div className="kpi-icon" style={{ background: 'var(--orange-light)' }}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="var(--orange)" strokeWidth="1.8"><path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/></svg>
           </div>
         </div>
 
         <div className="kpi-card">
           <div className="kpi-label">Movimientos hoy</div>
-          <div className="kpi-value" id="kpi-movs">{kpis.movs}</div>
+          <div className="kpi-value" id="kpi-movs">{kpi(kpis.movs)}</div>
           <div className="kpi-sub">Entradas y salidas registradas</div>
-          <div className="kpi-icon" style={{ background: '#fff4e6' }}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="#fe8f01" strokeWidth="1.8"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 014-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 01-4 4H3"/></svg>
+          <div className="kpi-icon" style={{ background: 'var(--orange-light)' }}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="var(--orange)" strokeWidth="1.8"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 014-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 01-4 4H3"/></svg>
           </div>
         </div>
 
         {/* Solo gerencia (data-rol="gerencia") */}
         {user?.rol !== 'jop' && (
           <div className="kpi-card kpi-danger">
-            <div className="kpi-label">Pedidos en riesgo</div>
-            <div className="kpi-value danger" id="kpi-riesgo">{kpis.riesgo}</div>
+            <div className="kpi-label">OT en riesgo</div>
+            <div className="kpi-value danger" id="kpi-riesgo">{kpi(kpis.riesgo)}</div>
             <div className="kpi-sub">Sin stock suficiente</div>
             <div className="kpi-icon" style={{ background: '#f8d7da' }}>
               <svg viewBox="0 0 24 24" fill="none" stroke="#dc3545" strokeWidth="1.8"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg>
@@ -144,7 +151,7 @@ export default function Dashboard() {
         <div className="card">
           <div className="card-title">
             Alertas activas
-            <span className="badge badge-danger">{kpis.totalAlertas}</span>
+            <span className="badge badge-danger">{kpi(kpis.totalAlertas)}</span>
           </div>
 
           <div id="alertas-list">
@@ -189,7 +196,7 @@ export default function Dashboard() {
               <>
                 <FilaMovEstatica icono="↓" bg="#d1e7dd" nombre="Acero inoxidable placa 2mm" sub="2025-05-20 · jgarcia" badge="badge-success" texto="+100" />
                 <FilaMovEstatica icono="↑" bg="#f8d7da" nombre="Cerradura seguridad triple" sub="2025-05-21 · mlopez" badge="badge-danger" texto="-16" />
-                <FilaMovEstatica icono="⇄" bg="#fff4e6" nombre="Taladro percutor 800W" sub="2025-05-25 · jgarcia" badge="badge-orange" texto="traslado" />
+                <FilaMovEstatica icono="⇄" bg="var(--orange-light)" nombre="Taladro percutor 800W" sub="2025-05-25 · jgarcia" badge="badge-orange" texto="traslado" />
               </>
             )}
             {ultimos !== null && ultimos.length === 0 && (

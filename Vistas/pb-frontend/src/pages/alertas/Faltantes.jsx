@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { API } from '../../services/api';
 import { formatQty, formatMoney } from '../../utils/format';
 import { useConfirm, usePrompt } from '../../hooks/useDialog';
@@ -10,6 +10,7 @@ import { usePagination } from '../../hooks/usePagination';
 import { overlayStyle, cancelBtnStyle } from '../../components/ConfirmDialog';
 import { useAuth } from '../../hooks/useAuth';
 import TabInsumosEspeciales from './TabInsumosEspeciales';
+import NombreCorto from '../../components/NombreCorto';   // F-17
 
 function getViabilidad(a) {
   if (!a.tiempo_reposicion || !a.fecha_instalacion) return { label: 'Sin datos', cls: 'badge-gray' };
@@ -33,7 +34,9 @@ export default function Faltantes() {
   const { user } = useAuth();
   const esGerencia = user?.rol === 'gerencia';
   const veEspeciales = esGerencia || user?.rol === 'jop';
-  const [tab, setTab] = useState('ot');
+  // B-06: una notificación de insumos especiales abre directo su pestaña (?tab=especiales)
+  const [params] = useSearchParams();
+  const [tab, setTab] = useState(veEspeciales && params.get('tab') === 'especiales' ? 'especiales' : 'ot');
 
   const [estado, setEstado] = useState('activa');
   const [periodo, setPeriodo] = useState('48');
@@ -260,7 +263,7 @@ export default function Faltantes() {
                             </span>
                           ))}
                     </td>
-                    <td>{a.proveedor_nombre || '—'}</td>
+                    <td><NombreCorto texto={a.proveedor_nombre} /></td>
                     <td><span className={`badge ${v.cls}`}>{v.label}</span></td>
                     <td><span className={`badge ${badgeClass}`}>{a.estado}</span></td>
                     <td>
@@ -374,7 +377,7 @@ export default function Faltantes() {
             </div>
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
               <button id="pb-dlg-cancel" style={cancelBtnStyle} onClick={() => closeProv(null)}>Cancelar</button>
-              <button id="pb-dlg-ok" style={{ padding: '8px 20px', borderRadius: 8, border: 'none', background: 'var(--orange,#fe8f01)', color: '#fff', cursor: 'pointer', fontSize: 13, fontWeight: 600 }} onClick={() => closeProv(dlgProv.value)}>Emitir solicitud</button>
+              <button id="pb-dlg-ok" style={{ padding: '8px 20px', borderRadius: 8, border: 'none', background: 'var(--orange-fill)', color: 'var(--on-orange)', cursor: 'pointer', fontSize: 13, fontWeight: 600 }} onClick={() => closeProv(dlgProv.value)}>Emitir solicitud</button>
             </div>
           </div>
         </div>

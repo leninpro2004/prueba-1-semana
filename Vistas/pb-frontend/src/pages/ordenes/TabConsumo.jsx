@@ -1,12 +1,15 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { API } from '../../services/api';
-import { useConfirm } from '../../hooks/useDialog';
+import { useConfirm, usePrompt } from '../../hooks/useDialog';
 import { formatQty } from '../../utils/format';
+import { esProyectoDePrueba } from '../../utils/proyectos';
 import SelectorProducto from '../../components/SelectorProducto';
+import { AvisoCerrable } from '../../components/Alert';
+import NombreCorto from '../../components/NombreCorto';   // F-17
 
 /**
- * R1 (docs/sprint/decisiones.md): pestaña Consumo de la OT.
+ * R1 (docs/incremento-3-4/decisiones.md): pestaña Consumo de la OT.
  *
  * Se carga la receta (la guardada en la OT, la de su especificación o una buscada)
  * con sus materiales para N puertas; se ajustan cantidades, se agregan o quitan
@@ -16,6 +19,10 @@ import SelectorProducto from '../../components/SelectorProducto';
  *  - Las pinturas no se descuentan aquí: su real sale del Seguimiento de pinturas.
  * D54: en una OT cerrada, gerencia puede "Corregir consumo": solo el real (por la diferencia, con motivo) y agregar
  * un material; sin receta, estimados ni quitar. La OT sigue cerrada.
+ * F-05: en una OT abierta, cambiar un real YA guardado (consumo extra o menor) pide el motivo en la fila, y quitar
+ * un material con consumo lo pide en un diálogo. El primer registro no lo pide.
+ * F-08 (D74): bloque "Medidas" de la puerta. Las líneas de la receta por fórmula se calculan con ellas;
+ * sin medidas llegan sin cantidad ("falta medida") y no se guardan hasta cargarlas o escribir el real.
  */
 
 const num = (v) => Number(String(v ?? '').trim().replace(',', '.'));
@@ -41,6 +48,7 @@ const filaDeOT = (m) => {
 
 export default function TabConsumo({ otId, data, bodegas, abierta, puedeCorregir = false, onGuardado, showAlert }) {
   const confirm = useConfirm();
+  const prompt = usePrompt();
   const orden = data?.orden;
   const recetaGuardada = orden?.receta_id != null ? String(orden.receta_id) : null;
 
@@ -57,6 +65,7 @@ export default function TabConsumo({ otId, data, bodegas, abierta, puedeCorregir
   const [errores, setErrores] = useState(null);
   const [corrigiendo, setCorrigiendo] = useState(false);   // D54: OT cerrada en modo corrección
   const [motivo, setMotivo] = useState('');
+  const [recargaPrecarga, setRecargaPrecarga] = useState(0);   // F-08: al guardar medidas se vuelve a precargar
   const editable = abierta || corrigiendo;
 
   useEffect(() => {
@@ -66,6 +75,12 @@ export default function TabConsumo({ otId, data, bodegas, abierta, puedeCorregir
 
   // Bodega de retiro: preelegida si hay una sola activa
   const bodegasActivas = useMemo(() => (bodegas || []).filter(b => ['activo', 'activa'].includes(b.estado)), [bodegas]);
+  // F-05: materiales con un consumo real ya guardado en la OT (según el backend)
+  const conRealGuardado = useMemo(
+    () => new Set((data?.materiales || []).filter(m => m.real != null).map(m => m.sku)), [data]);
+  /** El real de la fila cambia lo ya guardado: consumo extra o menor, pide motivo. */
+  const pideMotivo = (f) => abierta && !f.esPintura && conRealGuardado.has(f.sku)
+    && CANTIDAD_OK.test(String(f.real).trim()) && Math.abs(num(f.real) - f.registrado) > 1e-9;
   const bodega = bodegaId || (bodegasActivas.length === 1 ? String(bodegasActivas[0].id) : '');
 
   /* Estado inicial: lo guardado en la OT; si la OT está vacía, la receta precargada
@@ -88,7 +103,8 @@ export default function TabConsumo({ otId, data, bodegas, abierta, puedeCorregir
         setFilas(p.materiales.map(m => ({
           sku: m.sku, nombre: m.nombre, unidad: m.unidad, esPintura: m.es_pintura === true,
           critico: m.es_critico, inactivo: m.estado_material !== 'activo',
-          estimado: m.cantidad_total, registrado: 0, stock: null, real: String(m.cantidad_total),
+          estimado: m.cantidad_total, registrado: 0, stock: null,
+          real: m.cantidad_total == null ? '' : String(m.cantidad_total), faltaMedida: m.falta_medida || null,
         })));
         setRecetaEnTabla({ id: String(p.producto.id), codigo: p.producto.codigo, nombre: p.producto.nombre, puertas: p.puertas });
       } else {
@@ -97,7 +113,7 @@ export default function TabConsumo({ otId, data, bodegas, abierta, puedeCorregir
       }
     }).catch(err => { if (!cancelado) showAlert('danger', 'No se pudo cargar la receta: ' + err.message); });
     return () => { cancelado = true; };
-  }, [data, otId, recetaGuardada, orden, showAlert]);
+  }, [data, otId, recetaGuardada, orden, showAlert, recargaPrecarga]);
 
   /* "Cargar en la tabla": la receta elegida para N puertas. Reemplaza los estimados; el
      real ya registrado no se toca; los agregados a mano sin real se quitan (R1). */
@@ -127,7 +143,8 @@ export default function TabConsumo({ otId, data, bodegas, abierta, puedeCorregir
         sku: m.sku, nombre: m.nombre, unidad: m.unidad, esPintura: m.es_pintura === true,
         critico: m.es_critico, inactivo: m.estado_material !== 'activo',
         estimado: m.cantidad_total, registrado: prev?.registrado ?? 0, stock: prev?.stock ?? null,
-        real: prev && prev.registrado > 0 ? String(prev.registrado) : String(m.cantidad_total),
+        real: prev && prev.registrado > 0 ? String(prev.registrado) : m.cantidad_total == null ? '' : String(m.cantidad_total),
+        faltaMedida: m.falta_medida || null,
       };
     });
     const enReceta = new Set(nuevas.map(n => n.sku));
@@ -140,6 +157,7 @@ export default function TabConsumo({ otId, data, bodegas, abierta, puedeCorregir
   }, [recetaSel, puertas, otId, filas, confirm, showAlert]);
 
   const cambiarReal = (sku, valor) => setFilas(fs => fs.map(f => (f.sku === sku ? { ...f, real: valor } : f)));
+  const cambiarMotivo = (sku, valor) => setFilas(fs => fs.map(f => (f.sku === sku ? { ...f, motivo: valor } : f)));
   const quitar = (sku) => setFilas(fs => fs.filter(f => f.sku !== sku));
 
   const agregar = () => {
@@ -156,6 +174,11 @@ export default function TabConsumo({ otId, data, bodegas, abierta, puedeCorregir
     const malas = filas.filter(f => !f.esPintura && !CANTIDAD_OK.test(String(f.real).trim()));
     if (malas.length) {
       showAlert('danger', `Revise el consumo real de: ${malas.map(f => f.sku).join(', ')} (número mayor o igual a 0, hasta 4 decimales).`);
+      return;
+    }
+    const sinMotivo = filas.filter(f => pideMotivo(f) && !String(f.motivo || '').trim());
+    if (sinMotivo.length) {
+      showAlert('danger', `Indique el motivo del cambio de: ${sinMotivo.map(f => f.sku).join(', ')}. Ya tenían un consumo registrado.`);
       return;
     }
     // Resumen de lo que va a pasar con el stock, antes de confirmar
@@ -176,11 +199,27 @@ export default function TabConsumo({ otId, data, bodegas, abierta, puedeCorregir
     ].filter(Boolean);
     if (!(await confirm(partes.length ? partes.join(' ') + ' ¿Guardar?' : 'No hay cambios de stock. ¿Guardar los estimados?', 'Guardar consumo'))) return;
 
+    // F-05: quitar un material que tenía consumo devuelve stock y pide el motivo
+    let motivoQuitar = '';
+    const quitadosConConsumo = quitados.filter(q => parseFloat(q.real || 0) > 0 && !q.es_pintura);
+    if (quitadosConConsumo.length) {
+      const m = await prompt(
+        `Indique el motivo para quitar de la OT ${quitadosConConsumo.map(q => q.sku).join(', ')} (lo registrado se devuelve a bodega):`,
+        'Quitar material con consumo', 'Ej: no se usó en esta OT');
+      if (m == null) return;
+      if (!m.trim()) { showAlert('danger', 'Indique el motivo para quitar el material.'); return; }
+      motivoQuitar = m.trim();
+    }
+
     const body = {
       ...(recetaEnTabla && { receta_id: Number(recetaEnTabla.id), cantidad_puertas: Number(recetaEnTabla.puertas) }),
       reemplazar_receta: !!(recetaEnTabla && recetaGuardada && recetaGuardada !== String(recetaEnTabla.id)),
       bodega_id: bodega || null,
-      lineas: filas.map(f => ({ sku: f.sku, estimado: f.estimado, real: f.esPintura ? null : num(f.real) })),
+      ...(motivoQuitar && { motivo: motivoQuitar }),
+      lineas: filas.map(f => ({
+        sku: f.sku, estimado: f.estimado, real: f.esPintura ? null : num(f.real),
+        ...(pideMotivo(f) && { motivo: String(f.motivo).trim() }),
+      })),
     };
     setGuardando(true);
     setErrores(null);
@@ -259,12 +298,28 @@ export default function TabConsumo({ otId, data, bodegas, abierta, puedeCorregir
 
   return (
     <div className="tab-content" id="tab-consumo">
+      {/* F-24: OT de un proyecto de prueba (capacitación): el consumo sí mueve stock real */}
+      {abierta && esProyectoDePrueba(orden?.proyecto_codigo) && (
+        <AvisoCerrable className="alert alert-warning" style={{ marginBottom: 16, fontSize: 13 }}>
+          ⚠ Esta OT es de un <strong>proyecto de prueba</strong> ({orden.proyecto_codigo}). Lo que guardes aquí descuenta
+          stock real. Cuando termines de practicar, revierte el consumo antes de anular la OT.
+        </AvisoCerrable>
+      )}
       {data.resumen?.con_alerta_faltante > 0 && (
-        <div className="alert alert-warning" style={{ marginBottom: 16, fontSize: 13 }}>
+        <AvisoCerrable className="alert alert-warning" style={{ marginBottom: 16, fontSize: 13 }}>
           ⚠ {data.resumen.con_alerta_faltante} material(es) de esta OT tienen una alerta de faltante abierta.{' '}
           <Link to="/alertas/faltantes">Ver alertas de faltantes</Link>
-        </div>
+        </AvisoCerrable>
       )}
+
+      {/* F-08: medidas de la puerta (se remonta al cambiar las guardadas) */}
+      <BloqueMedidas key={JSON.stringify(precarga?.orden?.medidas ?? null)} otId={otId} medidas={precarga?.orden?.medidas ?? null}
+        derivadas={precarga?.orden?.derivadas ?? null} editable={abierta} showAlert={showAlert}
+        onGuardadas={(msg) => {
+          const conGuardados = (data.materiales || []).length > 0;
+          showAlert('success', msg + (conGuardados ? ' Pulse "Cargar en la tabla" para recalcular los estimados con las nuevas medidas.' : ''));
+          setRecargaPrecarga(n => n + 1);
+        }} />
 
       {/* Receta */}
       <div className="card" style={{ padding: 16, marginBottom: 16 }} id="consumo-receta">
@@ -338,13 +393,15 @@ export default function TabConsumo({ otId, data, bodegas, abierta, puedeCorregir
                 return (
                   <tr key={f.sku} style={f.inactivo ? { background: '#FDECEA' } : undefined}>
                     <td>
-                      <div style={{ fontWeight: 500 }}>{f.nombre}</div>
+                      <div style={{ fontWeight: 500 }}><NombreCorto texto={f.nombre} /></div>
                       <div style={{ fontSize: 11, color: 'var(--gray)' }}>
                         <code>{f.sku}</code>{f.unidad ? ` · ${f.unidad}` : ''}
                         {f.critico && <> <span className="badge badge-danger" style={{ fontSize: 10 }}>Crítico</span></>}
                         {f.inactivo && <> <span className="badge badge-gray" style={{ fontSize: 10 }}>Inactivo</span></>}
-                        {f.estimado == null && <> <span className="badge badge-info" style={{ fontSize: 10 }}>agregado a mano</span></>}
+                        {f.estimado == null && !f.faltaMedida && <> <span className="badge badge-info" style={{ fontSize: 10 }}>agregado a mano</span></>}
+                        {f.faltaMedida && <> <span className="badge badge-warning" style={{ fontSize: 10 }}>falta medida</span></>}
                       </div>
+                      {f.faltaMedida && <div style={{ fontSize: 11, color: 'var(--warning)' }}>{f.faltaMedida}</div>}
                       {error && <div style={{ fontSize: 11, color: 'var(--danger)' }}>{error}</div>}
                     </td>
                     <td style={{ textAlign: 'right' }}>{f.estimado != null ? formatQty(f.estimado) : '—'}</td>
@@ -364,6 +421,13 @@ export default function TabConsumo({ otId, data, bodegas, abierta, puedeCorregir
                             <div style={{ fontSize: 11, color: delta > 0 ? 'var(--danger)' : 'var(--success)' }}>
                               {delta > 0 ? `descuenta ${formatQty(delta)}` : `devuelve ${formatQty(-delta)}`}
                             </div>
+                          )}
+                          {pideMotivo(f) && (
+                            <input className="form-control" aria-label={`Motivo del cambio de ${f.sku}`} maxLength={255}
+                              style={{ width: 200, marginLeft: 'auto', marginTop: 4, fontSize: 12,
+                                borderColor: String(f.motivo || '').trim() ? undefined : 'var(--warning)' }}
+                              placeholder="Motivo (ej.: se cortó mal)" value={f.motivo || ''}
+                              onChange={e => cambiarMotivo(f.sku, e.target.value)} />
                           )}
                         </>
                       ) : formatQty(real)}
@@ -427,11 +491,11 @@ export default function TabConsumo({ otId, data, bodegas, abierta, puedeCorregir
         )}
         {!abierta && corrigiendo && (
           <div style={{ marginTop: 12 }} id="correccion-consumo">
-            <div className="alert alert-warning" style={{ fontSize: 13, marginBottom: 12 }}>
+            <AvisoCerrable className="alert alert-warning" style={{ fontSize: 13, marginBottom: 12 }}>
               Corrección de una OT cerrada: ajuste el consumo real o agregue un material que se usó y no se registró (para
               quitarlo, deje su real en 0). El stock se mueve por la diferencia y la OT sigue cerrada. Las pinturas se
               corrigen desde el Seguimiento de pinturas.
-            </div>
+            </AvisoCerrable>
             <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end' }}>
               <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap' }}>
                 <div>
@@ -464,6 +528,91 @@ export default function TabConsumo({ otId, data, bodegas, abierta, puedeCorregir
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * F-08 (D74): medidas de la puerta de la OT, en milímetros. Todas las puertas de la OT miden lo
+ * mismo. Se guardan aparte del consumo (no mueven stock); al guardarlas se vuelve a precargar la receta.
+ */
+const CAMPOS_MEDIDAS = [
+  { campo: 'vano_ancho_mm', etiqueta: 'Vano ancho (mm)' },
+  { campo: 'vano_alto_mm', etiqueta: 'Vano alto (mm)' },
+  { campo: 'perfil_marco_mm', etiqueta: 'Perfil del marco (mm)' },
+  { campo: 'hojas', etiqueta: 'Hojas' },
+];
+
+function BloqueMedidas({ otId, medidas, derivadas, editable, showAlert, onGuardadas }) {
+  const [form, setForm] = useState(() => ({
+    vano_ancho_mm: medidas?.vano_ancho_mm != null ? String(medidas.vano_ancho_mm) : '',
+    vano_alto_mm: medidas?.vano_alto_mm != null ? String(medidas.vano_alto_mm) : '',
+    perfil_marco_mm: medidas?.perfil_marco_mm != null ? String(medidas.perfil_marco_mm) : '',
+    hojas: medidas?.hojas != null ? String(medidas.hojas) : '1',
+    mdf: medidas?.mdf === true,
+  }));
+  const [errores, setErrores] = useState({});
+  const [guardando, setGuardando] = useState(false);
+
+  const guardar = async (quitar = false) => {
+    setGuardando(true);
+    setErrores({});
+    try {
+      const r = await API.ordenesTrabajo.guardarMedidas(otId, quitar ? null : form);
+      onGuardadas(r.message);
+    } catch (err) {
+      if (err.payload?.errores?.length) setErrores(Object.fromEntries(err.payload.errores.map(e => [e.campo, e.error])));
+      showAlert('danger', err.message);
+    } finally {
+      setGuardando(false);
+    }
+  };
+
+  return (
+    <div className="card" style={{ padding: 16, marginBottom: 16 }} id="consumo-medidas">
+      <div className="section-label" style={{ marginBottom: 2 }}>Medidas de la puerta</div>
+      <div style={{ fontSize: 12, color: 'var(--gray)', marginBottom: 8 }}>
+        {medidas
+          ? `Vano ${formatQty(medidas.vano_ancho_mm)} × ${formatQty(medidas.vano_alto_mm)} mm · ${medidas.hojas} hoja(s) · ` +
+            `perfil ${formatQty(medidas.perfil_marco_mm)} mm${medidas.mdf ? ' · con MDF' : ''}. `
+          : 'Sin medidas. '}
+        Los insumos de la receta que se calculan por medidas las usan; todas las puertas de la OT miden lo mismo.
+      </div>
+      {derivadas && (
+        <div style={{ fontSize: 12, marginBottom: 8 }} id="medidas-derivadas">
+          {[['Marco', 'marco'], ['Alojamiento', 'alojamiento'], ['Hoja', 'hoja'], ['Bastidor', 'bastidor']].map(([nombre, v]) => (
+            <span key={v} style={{ marginRight: 16 }}>
+              {nombre}: <strong>{formatQty(derivadas[`${v}_ancho`])} × {formatQty(derivadas[`${v}_alto`])}</strong> mm
+            </span>
+          ))}
+          {derivadas.hojas > 1 && <span style={{ color: 'var(--gray)' }}>(hoja y bastidor: cada hoja)</span>}
+        </div>
+      )}
+      {editable && (
+        <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+          {CAMPOS_MEDIDAS.map(({ campo, etiqueta }) => (
+            <div key={campo}>
+              <label className="form-label" htmlFor={`medida-${campo}`} style={{ marginBottom: 4 }}>{etiqueta}</label>
+              <input className="form-control" id={`medida-${campo}`} inputMode="decimal" style={{ width: 120, ...(errores[campo] && { borderColor: 'var(--danger)' }) }}
+                value={form[campo]} title={errores[campo] || undefined}
+                onChange={e => setForm(f => ({ ...f, [campo]: e.target.value }))} />
+            </div>
+          ))}
+          <label style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13, paddingBottom: 8 }}>
+            <input type="checkbox" id="medida-mdf" checked={form.mdf} onChange={e => setForm(f => ({ ...f, mdf: e.target.checked }))} />
+            Con MDF
+          </label>
+          <button type="button" className="btn btn-secondary" id="btn-guardar-medidas" disabled={guardando} onClick={() => guardar(false)}>
+            {guardando ? 'Guardando…' : 'Guardar medidas'}
+          </button>
+          {medidas && (
+            <button type="button" className="btn btn-ghost" disabled={guardando} onClick={() => guardar(true)}>Quitar</button>
+          )}
+        </div>
+      )}
+      {Object.keys(errores).length > 0 && (
+        <div style={{ fontSize: 11, color: 'var(--danger)', marginTop: 6 }}>{Object.values(errores).join(' · ')}</div>
+      )}
     </div>
   );
 }

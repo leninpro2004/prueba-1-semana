@@ -4,10 +4,11 @@ import { API } from '../../services/api';
 import { useAuth } from '../../hooks/useAuth';
 import { useConfirm } from '../../hooks/useDialog';
 import { usePageTitle } from '../../contexts/TitleContext';
-import Alert, { useAlert } from '../../components/Alert';
+import Alert, { useAlert, AvisoCerrable } from '../../components/Alert';
 import Pagination from '../../components/Pagination';
 import BotonExportar from '../../components/BotonExportar';
 import { exportarCSV, ErrorExportacion, LIMITE_FILAS } from '../../utils/csvExport';
+import NombreCorto from '../../components/NombreCorto';   // F-17
 
 // CU-31: paginacion en el servidor. Antes se pedian solo los 50 mas recientes y se
 // paginaban en el navegador, asi que los movimientos mas antiguos nunca aparecian.
@@ -120,10 +121,6 @@ export default function MovimientoHistorial() {
   const [bodegas, setBodegas] = useState([]);
   const [revertir, setRevertir] = useState(null); // movimiento a revertir
   // CU-42: reautenticación dentro del modal de reversión
-  const [clave, setClave] = useState('');
-  const [errorReauth, setErrorReauth] = useState('');
-  const [bloqueado, setBloqueado] = useState(false);
-  const [enviando, setEnviando] = useState(false);
   const [avisoOT, setAvisoOT] = useState(null); // CU-44: consumo de OT que se quiso revertir
   const [abierto, setAbierto] = useState(null);   // CU-31: id del movimiento con el detalle desplegado (uno a la vez)
 
@@ -251,36 +248,19 @@ export default function MovimientoHistorial() {
     // CU-44: un consumo de OT se corrige desde la OT. Se avisa sin pedir la
     // contraseña, porque el backend lo rechazaría igual.
     if (m.orden_trabajo_id) { setAvisoOT(m); return; }
-    setClave(''); setErrorReauth(''); setBloqueado(false); setEnviando(false);
     setRevertir(m);
   };
-  const cerrarRevertir = () => { setRevertir(null); setClave(''); setErrorReauth(''); };
+  const cerrarRevertir = () => setRevertir(null);
 
-  // CU-42: primero se valida la contraseña; solo con la autorización se revierte
+  // CU-42 (F-11): la firma de un gerente la pide apiFetch (modal "Autorización de gerencia");
+  // lo que no se puede revertir se rechaza antes de pedirla.
   const confirmarRevertir = async (e) => {
     e.preventDefault();
-    if (!clave || enviando || bloqueado) return;
     const id = revertir.id;
-    setEnviando(true);
-    setErrorReauth('');
-    let autorizacion;
-    try {
-      const r = await API.auth.reautenticar(clave, id);
-      if (!r) return; // 401: la sesión expiró y apiFetch ya redirige al login
-      autorizacion = r.autorizacion;
-    } catch (err) {
-      // 403 contraseña incorrecta (quedan intentos) · 423 bloqueo de 15 minutos
-      setClave('');
-      if (err.status === 423) setBloqueado(true);
-      setErrorReauth(err.message);
-      return;
-    } finally {
-      setEnviando(false);
-    }
-
     cerrarRevertir();
     try {
-      const resp = await API.movimientos.revertir(id, autorizacion);
+      const resp = await API.movimientos.revertir(id);
+      if (!resp) return; // 401: la sesión expiró y apiFetch ya redirige al login
       showAlert('success', `${resp?.message || 'Movimiento anulado por reversión.'} El stock fue ajustado y la acción queda registrada en auditoría.`);
       cargarMovimientos();
     } catch (err) {
@@ -361,15 +341,15 @@ export default function MovimientoHistorial() {
 
       {/* CU-31 Exc 3: rango de fechas incoherente */}
       {rangoInvalido && (
-        <div className="alert alert-danger" style={{ marginBottom: 16 }}>
+        <AvisoCerrable className="alert alert-danger" style={{ marginBottom: 16 }}>
           La fecha de inicio es posterior a la fecha de fin. Corrija el rango para consultar.
-        </div>
+        </AvisoCerrable>
       )}
       {/* CU-31 Exc 2: demasiados registros para un analisis especifico */}
       {!rangoInvalido && total > LIMITE_AVISO && (
-        <div className="alert alert-warning" style={{ marginBottom: 16 }}>
+        <AvisoCerrable className="alert alert-warning" style={{ marginBottom: 16 }}>
           La consulta devolvió {total} movimientos. Se muestran paginados; acote los filtros (fechas, tipo, bodega o producto) para un análisis más específico.
-        </div>
+        </AvisoCerrable>
       )}
 
       {/* Tabla */}
@@ -419,7 +399,7 @@ export default function MovimientoHistorial() {
                       {m.fecha}<div style={{ fontSize: 11, color: '#aaa' }}>{m.hora}</div>
                     </td>
                     <td><span className={`badge ${tipoCls}`}>{capitalizar(m.tipo)}</span></td>
-                    <td><div style={{ fontWeight: 500, fontSize: 13 }}>{m.producto}</div><div style={{ fontSize: 11, color: '#aaa' }}>{m.sku}</div></td>
+                    <td><div style={{ fontWeight: 500, fontSize: 13 }}><NombreCorto texto={m.producto} /></div><div style={{ fontSize: 11, color: '#aaa' }}>{m.sku}</div></td>
                     <td style={{ fontWeight: 600 }}>{cantSign}</td>
                     <td style={{ fontSize: 12, color: 'var(--gray)' }}>{m.bodegaOrigen}</td>
                     <td style={{ fontSize: 12, color: 'var(--gray)' }}>{m.bodegaDestino}</td>
@@ -510,7 +490,7 @@ export default function MovimientoHistorial() {
         </div>
       )}
 
-      {/* Modal revertir (FR-30, solo gerencia) · CU-42: detalle completo + reautenticación */}
+      {/* Modal revertir (FR-30, solo gerencia) · CU-42: detalle completo; la firma la pide apiFetch (F-11) */}
       {revertir && (
         <div className="modal-backdrop show" id="modal-revertir" onClick={e => { if (e.target === e.currentTarget) cerrarRevertir(); }}>
           <form className="modal" onSubmit={confirmarRevertir}>
@@ -530,26 +510,14 @@ export default function MovimientoHistorial() {
                 <Dato etiqueta="Bodega">{revertir.bodega}</Dato>
                 <Dato etiqueta="Responsable">{revertir.usuario || '—'}</Dato>
               </div>
-              <div className="alert alert-warning">
+              <AvisoCerrable className="alert alert-warning">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-                La reversión ajusta el stock y queda registrada en auditoría. Para autorizarla, reingrese su contraseña.
-              </div>
-              <div className="form-group" style={{ marginBottom: 0 }}>
-                <label className="form-label" htmlFor="rev-clave">Contraseña</label>
-                <input type="password" className="form-control" id="rev-clave" autoComplete="current-password" autoFocus
-                  value={clave} onChange={e => setClave(e.target.value)} disabled={bloqueado || enviando} />
-              </div>
-              {errorReauth && (
-                <div className={`alert ${bloqueado ? 'alert-danger' : 'alert-warning'}`} style={{ marginTop: 12, marginBottom: 0 }}>
-                  {errorReauth}
-                </div>
-              )}
+                La reversión ajusta el stock y queda registrada en auditoría. Para autorizarla se pedirá el usuario y la contraseña de un gerente.
+              </AvisoCerrable>
             </div>
             <div className="modal-footer">
               <button type="button" className="btn btn-secondary" onClick={cerrarRevertir}>Cancelar</button>
-              <button type="submit" className="btn btn-primary" id="btn-confirmar-revertir" disabled={!clave || bloqueado || enviando}>
-                {enviando ? 'Validando…' : 'Autorizar reversión'}
-              </button>
+              <button type="submit" className="btn btn-primary" id="btn-confirmar-revertir" autoFocus>Revertir</button>
             </div>
           </form>
         </div>

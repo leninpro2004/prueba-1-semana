@@ -1,6 +1,6 @@
 const { test, before, after, beforeEach, describe } = require('node:test');
 const assert = require('node:assert/strict');
-const { api, bajar, autorizacion } = require('./helpers/api');
+const { api, bajar, firmaGerencia } = require('./helpers/api');
 const db = require('./helpers/db');
 const { compra } = require('./helpers/compra');   // D66: una compra lleva proveedor, precio, pedido y factura
 
@@ -221,9 +221,9 @@ describe('Listado de movimientos', () => {
   });
 });
 
-/** CU-44: revertir con el token de CU-42 (o el que se pase, para probar rechazos). */
-const revertir = (id, token = autorizacion(id)) =>
-  api('POST', `/api/movimientos/${id}/revertir`, { body: { autorizacion: token } });
+/** CU-44: revertir con la firma de gerencia (CU-42, F-11; el helper firma solo) o la que se pase, para probar rechazos. */
+const revertir = (id, firma = null) =>
+  api('POST', `/api/movimientos/${id}/revertir`, firma ? { firma } : {});
 
 /** Movimiento tal como quedó en la BD (el inverso se busca por id_revertido). */
 async function movimiento(where, params) {
@@ -301,20 +301,23 @@ describe('Revertir movimiento (CU-44)', () => {
     assert.deepEqual(await db.descuadresDeReservas(), []);
   });
 
-  test('sin token, token de otro movimiento, de otro usuario o vencido: 403 y nada cambia', async () => {
+  test('sin firma, firma de otra acción, vencida o ya usada: 428 y nada cambia', async () => {
     const antes = await db.stockDe('MAT-FIFO');
     const a = (await salidaDe(1)).body.movimiento_id;
     const b = (await salidaDe(1)).body.movimiento_id;
+    // Una firma usada para revertir b no sirve después para revertir a
+    const usada = firmaGerencia('revertir_movimiento');
+    assert.equal((await revertir(b, usada)).status, 200);
     const trasSalidas = await db.stockDe('MAT-FIFO');
 
-    const sinToken = await api('POST', `/api/movimientos/${a}/revertir`);
-    assert.equal(sinToken.status, 403);
-    assert.equal((await revertir(a, autorizacion(b))).status, 403, 'token de otro movimiento');
-    assert.equal((await revertir(a, autorizacion(a, { uid: 2 }))).status, 403, 'token de otro usuario');
-    assert.equal((await revertir(a, autorizacion(a, { accion: 'otra' }))).status, 403, 'token de otra acción');
-    assert.equal((await revertir(a, autorizacion(a, { iat: Math.floor(Date.now() / 1000) - 600 }, { expiresIn: 300 }))).status,
-      403, 'token vencido');
-    assert.equal((await revertir(a, 'no-es-un-token')).status, 403);
+    const sinFirma = await api('POST', `/api/movimientos/${a}/revertir`, { sinFirma: true });
+    assert.equal(sinFirma.status, 428);
+    assert.equal(sinFirma.body.requiere_firma, 'revertir_movimiento');
+    assert.equal((await revertir(a, firmaGerencia('aprobar_merma'))).status, 428, 'firma de otra acción');
+    assert.equal((await revertir(a, firmaGerencia('revertir_movimiento', { iat: Math.floor(Date.now() / 1000) - 600 }, { expiresIn: 300 }))).status,
+      428, 'firma vencida');
+    assert.equal((await revertir(a, 'no-es-un-token')).status, 428);
+    assert.equal((await revertir(a, usada)).status, 428, 'firma ya usada');
 
     assert.deepEqual(await db.stockDe('MAT-FIFO'), trasSalidas);
     assert.notDeepEqual(trasSalidas, antes);

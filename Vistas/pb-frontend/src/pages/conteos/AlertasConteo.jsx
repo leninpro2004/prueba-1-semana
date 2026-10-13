@@ -32,7 +32,7 @@ export default function AlertasConteo({ conteo, onGeneradas }) {
     <div className="card" style={{ marginBottom: 16 }} id="alertas-conteo">
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
         <div>
-          <div className="section-label" style={{ marginBottom: 2 }}>Alertas por diferencia (CU-57)</div>
+          <div className="section-label" style={{ marginBottom: 2 }}>Alertas por diferencia</div>
           <div style={{ fontSize: 13, color: 'var(--gray)' }}>
             {conteo.resultado === 'conforme'
               ? 'El conteo es conforme: no hay diferencias fuera de tolerancia que alertar.'

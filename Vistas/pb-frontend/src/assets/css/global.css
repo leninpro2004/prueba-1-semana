@@ -29,6 +29,39 @@
   --radius-xl:    16px;
   --shadow-sm:    0 1px 4px rgba(0,0,0,.08);
   --shadow-md:    0 4px 16px rgba(0,0,0,.10);
+
+  /* F-25a: contraste 4,5:1. Texto naranja sobre blanco o --orange-light, y relleno naranja con texto encima
+     (botón primario, ítem activo del menú, avatares). Con el naranja oficial solo el texto negro pasa (9,14). */
+  --orange-text:        #a65400;
+  --orange-fill:        var(--orange);
+  --orange-fill-hover:  var(--orange-dark);
+  --on-orange:          var(--black);
+  --orange-on-dark:     var(--orange);   /* F-25a': texto naranja sobre el menú oscuro */
+
+  /* B-17: alias que usan pantallas antiguas y no estaban definidos (el navegador los ignoraba).
+     F-25a: --primary se usa como color de texto, así que apunta al naranja legible. */
+  --text-secondary: var(--gray);
+  --border:         var(--gray-mid);
+  --primary:        var(--orange-text);
+  --bg-alt:         var(--gray-light);
+  --bg-hover:       var(--gray-light);
+  --warning-bg:     var(--warning-light);
+}
+
+/* F-25a (D82): paleta de Finanzas (escala orange y gray de Tailwind) para que el cliente compare.
+   Se activa con data-paleta en <html> (utils/paleta.js). Cuando el cliente elija, queda un solo juego. */
+:root[data-paleta="finanzas"] {
+  --orange:       #ea580c;
+  --orange-light: #fff7ed;
+  --orange-dark:  #c2410c;
+  --gray:         #6b7280;
+  --gray-light:   #f3f4f6;
+  --gray-mid:     #e5e7eb;
+  --orange-text:        #c2410c;
+  --orange-fill:        #c2410c;
+  --orange-fill-hover:  #9a3412;
+  --on-orange:          var(--white);
+  --orange-on-dark:     #f97316;
 }
 
 html { font-size: 16px; }
@@ -97,13 +130,17 @@ body.sidebar-collapsed .sidebar {
 
 .sidebar-logo-icon {
   width: 36px; height: 36px;
-  background: var(--orange);
+  background: var(--orange-fill);
   border-radius: var(--radius-md);
   display: flex; align-items: center; justify-content: center;
-  font-size: 16px; font-weight: 700; color: var(--white);
+  font-size: 16px; font-weight: 700; color: var(--on-orange);
   flex-shrink: 0;
   letter-spacing: -0.5px;
 }
+
+/* F-07 (#24): símbolo del logo del cliente sobre fondo blanco (el sidebar es oscuro) */
+.sidebar-logo-icon.con-imagen { background: var(--white); padding: 3px; }
+.sidebar-logo-icon.con-imagen img { width: 100%; height: 100%; object-fit: contain; display: block; }
 
 .sidebar-logo-text { overflow: hidden; transition: opacity .2s; white-space: nowrap; }
 body.sidebar-collapsed .sidebar-logo-text { opacity: 0; width: 0; }
@@ -159,8 +196,8 @@ body.sidebar-collapsed .sidebar-item {
 .sidebar-item:hover { background: #252525; color: var(--white); }
 
 .sidebar-item.active {
-  background: var(--orange);
-  color: var(--white);
+  background: var(--orange-fill);
+  color: var(--on-orange);
   font-weight: 500;
   border-left-color: transparent;
 }
@@ -250,9 +287,9 @@ body.sidebar-collapsed .sidebar-user-btn {
 .sidebar-avatar {
   width: 32px; height: 32px;
   border-radius: 50%;
-  background: var(--orange);
+  background: var(--orange-fill);
   display: flex; align-items: center; justify-content: center;
-  font-size: 11px; font-weight: 700; color: var(--white);
+  font-size: 11px; font-weight: 700; color: var(--on-orange);
   flex-shrink: 0;
 }
 
@@ -338,9 +375,9 @@ body.sidebar-collapsed .sidebar-user-menu { display: none !important; }
 .topbar-avatar {
   width: 32px; height: 32px;
   border-radius: 50%;
-  background: var(--orange);
+  background: var(--orange-fill);
   display: flex; align-items: center; justify-content: center;
-  font-size: 11px; font-weight: 700; color: var(--white);
+  font-size: 11px; font-weight: 700; color: var(--on-orange);
   cursor: pointer;
 }
 
@@ -381,8 +418,8 @@ body.sidebar-collapsed .sidebar-user-menu { display: none !important; }
 }
 .btn svg { width: 15px; height: 15px; flex-shrink: 0; }
 
-.btn-primary   { background: var(--orange); color: var(--white); }
-.btn-primary:hover { background: var(--orange-dark); }
+.btn-primary   { background: var(--orange-fill); color: var(--on-orange); }
+.btn-primary:hover { background: var(--orange-fill-hover); }
 
 .btn-secondary { background: var(--white); color: var(--black); border: 1px solid var(--gray-mid); }
 .btn-secondary:hover { background: var(--gray-light); }
@@ -443,7 +480,7 @@ body.sidebar-collapsed .sidebar-user-menu { display: none !important; }
 .kpi-label { font-size: 11px; color: var(--gray); font-weight: 500; text-transform: uppercase; letter-spacing: .5px; margin-bottom: 8px; }
 .kpi-value { font-size: 28px; font-weight: 700; line-height: 1; }
 .kpi-value.danger  { color: var(--danger); }
-.kpi-value.warning { color: var(--orange-dark); }
+.kpi-value.warning { color: var(--orange-text); }
 .kpi-sub   { font-size: 12px; color: var(--gray); margin-top: 4px; }
 
 .kpi-icon {
@@ -500,7 +537,7 @@ tbody tr:hover { background: #fafafa; }
   font-weight: 600;
   white-space: nowrap;
 }
-.badge-orange  { background: var(--orange-light); color: var(--orange-dark); }
+.badge-orange  { background: var(--orange-light); color: var(--orange-text); }
 .badge-success { background: var(--success-light); color: #0a3622; }
 .badge-danger  { background: var(--danger-light); color: #58151c; }
 .badge-warning { background: var(--warning-light); color: #664d03; }
@@ -700,6 +737,24 @@ textarea.form-control { resize: vertical; min-height: 80px; }
   color: var(--black);
   box-shadow: var(--shadow-sm);
 }
+/* B-08: pestañas de enlaces (Reportes) que se desplazan hacia el lado si no caben */
+.tabs.tabs-scroll { width: 0; min-width: 100%; overflow-x: auto; }   /* width 0: no ensancha la página */
+a.tab { text-decoration: none; }
+/* B-08: índice de reportes, tarjetas agrupadas por tema */
+.reportes-grupo { font-size: 12px; font-weight: 600; color: var(--gray); margin-bottom: 8px; }
+.reportes-columnas { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 20px; align-items: start; }
+.reportes-grilla { display: flex; flex-direction: column; gap: 10px; }
+.reporte-tarjeta { display: flex; gap: 12px; align-items: flex-start; background: var(--white); border: 1px solid var(--gray-mid);
+  border-radius: var(--radius-lg); padding: 14px 16px; color: inherit; text-decoration: none; transition: border-color .15s; }
+.reporte-tarjeta:hover, .reporte-tarjeta:focus-visible { border-color: var(--orange); }
+.reporte-icono { width: 36px; height: 36px; flex-shrink: 0; border-radius: var(--radius-md); background: var(--orange-light);
+  color: var(--orange-dark); display: flex; align-items: center; justify-content: center; }
+.reporte-icono svg { width: 20px; height: 20px; }
+.reporte-titulo { display: block; font-weight: 600; font-size: 14px; margin-bottom: 2px; }
+.reporte-descripcion { display: block; font-size: 12px; color: var(--gray); line-height: 1.4; }
+/* B-08b: indicadores del mes del índice, que llevan a su reporte */
+.reporte-kpi { color: inherit; text-decoration: none; transition: border-color .15s; }
+.reporte-kpi:hover, .reporte-kpi:focus-visible { border-color: var(--orange); }
 
 /* ── MISC ──────────────────────────────────────────────── */
 .section-label {
@@ -750,6 +805,7 @@ textarea.form-control { resize: vertical; min-height: 80px; }
   .page-body  { padding: 16px; }
   .tabs { width: 100%; }
   .tab  { flex: 1; text-align: center; }
+  .tabs-scroll .tab { flex: none; }
 
   .modal-backdrop { padding: 0; align-items: flex-end; }
   .modal { border-radius: var(--radius-xl) var(--radius-xl) 0 0; max-height: 92vh; max-width: 100%; }
@@ -759,4 +815,99 @@ textarea.form-control { resize: vertical; min-height: 80px; }
   .three-col { grid-template-columns: 1fr; }
   .kpi-grid  { grid-template-columns: 1fr; }
   .page-header { flex-direction: column; align-items: flex-start; }
+}
+
+/* ── F-25a' (D82, N-14): composición nueva ("Vista: Nueva") ─────────────────────
+   Lineamientos de composición visual y Dashboard M7 de Finanzas: menú agrupado por dominio,
+   encabezado de vista, tarjetas KPI y secciones. Cuando el cliente elija, se queda o se borra. */
+:root[data-vista="nueva"] { --sidebar-w: 248px; }
+
+/* Menú agrupado (SidebarAgrupado.jsx) */
+.sidebar-agrupado .sidebar-item { margin: 1px 10px; padding: 9px 12px; border-left: none; border-radius: var(--radius-md); }
+.sidebar-agrupado .sidebar-item.active {
+  background: color-mix(in srgb, var(--orange) 16%, transparent);
+  color: var(--orange-on-dark);
+}
+.sidebar-grupo-btn {
+  display: flex; align-items: center; gap: 9px;
+  width: calc(100% - 20px); margin: 1px 10px; padding: 9px 12px;
+  background: none; border: none; border-radius: var(--radius-md);
+  color: #cfcfcf; font-size: 13px; font-weight: 600; text-align: left; white-space: nowrap;
+  transition: background .15s, color .15s;
+}
+.sidebar-grupo-btn:hover { background: #252525; color: var(--white); }
+.sidebar-grupo-btn svg { width: 16px; height: 16px; flex-shrink: 0; color: #8a8a8a; }
+.sidebar-grupo-label { flex: 1; overflow: hidden; }
+.sidebar-grupo-btn .sidebar-grupo-flecha { width: 14px; height: 14px; transition: transform .2s; }
+.sidebar-grupo.abierto .sidebar-grupo-flecha { transform: rotate(180deg); }
+.sidebar-grupo-items { display: none; margin: 2px 0 6px 22px; border-left: 1px solid #2e2e2e; }
+.sidebar-grupo.abierto .sidebar-grupo-items { display: block; }
+.sidebar-agrupado .sidebar-item-hijo { margin-left: 6px; }
+/* Entradas directas (Panel, Reportes) con el mismo peso que los encabezados de grupo */
+.sidebar-agrupado .sidebar-item-raiz:not(.active) { color: #cfcfcf; font-weight: 600; }
+body.sidebar-collapsed .sidebar-grupo-btn { display: none; }
+body.sidebar-collapsed .sidebar-grupo-items { display: block; margin: 0; border-left: none; }
+body.sidebar-collapsed .sidebar-agrupado .sidebar-item { margin: 1px 6px; padding: 11px 0; }
+
+/* Encabezado de vista (PageHeader.jsx): banda blanca de borde a borde del área de contenido */
+.encabezado-vista {
+  background: var(--white); border-bottom: 1px solid var(--gray-mid);
+  margin: -24px -24px 24px; padding: 24px;
+}
+.encabezado-vista-fila { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 12px; }
+.encabezado-vista-barra { width: 48px; height: 4px; border-radius: 2px; background: var(--orange); margin-bottom: 12px; }
+.encabezado-vista-contexto { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; color: var(--orange-text); }
+.encabezado-vista-titulo { font-size: 28px; font-weight: 700; line-height: 1.2; margin-top: 2px; }
+.encabezado-vista-descripcion { font-size: 14px; color: var(--gray); margin-top: 4px; }
+.encabezado-vista-acciones { display: flex; flex-wrap: wrap; gap: 8px; }
+
+.contenido-max { width: 100%; max-width: 1500px; margin-left: auto; margin-right: auto; }
+.vista-apilada { display: flex; flex-direction: column; gap: 20px; }
+
+/* Tarjetas KPI (KpiCard.jsx) */
+.kpi2-grid { display: grid; gap: 12px; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.kpi2 {
+  display: block; min-width: 0; background: var(--white); color: inherit; text-decoration: none;
+  border-top: 4px solid var(--orange); padding: 20px; box-shadow: var(--shadow-sm); transition: box-shadow .15s;
+}
+a.kpi2:hover, a.kpi2:focus-visible { box-shadow: var(--shadow-md); }
+.kpi2-peligro { border-top-color: var(--danger); }
+.kpi2-icono { display: inline-flex; padding: 8px; border-radius: var(--radius-sm); background: var(--orange-light); color: var(--orange-text); }
+.kpi2-peligro .kpi2-icono { background: var(--danger-light); color: var(--danger); }
+.kpi2-icono svg { width: 20px; height: 20px; }
+.kpi2-titulo { margin-top: 16px; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .3px; color: var(--gray); }
+.kpi2-valor { margin-top: 4px; font-size: 30px; font-weight: 700; line-height: 1.1; color: var(--black); overflow-wrap: anywhere; }
+.kpi2-periodo { margin-top: 4px; font-size: 12px; color: var(--gray); }
+.kpi2-periodo::first-letter { text-transform: uppercase; }
+.kpi2-descripcion { margin-top: 12px; font-size: 12px; line-height: 1.5; color: var(--gray); }
+
+/* Secciones (Seccion.jsx) */
+.seccion { min-width: 0; background: var(--white); border: 1px solid var(--gray-mid); box-shadow: var(--shadow-sm); padding: 24px; }
+.seccion-cabecera { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 20px; }
+.seccion-titulo { font-size: 18px; font-weight: 700; }
+.seccion-descripcion { max-width: 48rem; margin-top: 4px; font-size: 13px; color: var(--gray); }
+.seccion-enlace { font-size: 13px; font-weight: 700; color: var(--orange-text); white-space: nowrap; }
+.seccion-enlace:hover { color: var(--black); }
+.seccion-vacia { padding: 24px 16px; border: 1px dashed var(--gray-mid); background: var(--gray-light); text-align: center; font-size: 13px; color: var(--gray); }
+.secciones-grid { display: grid; gap: 20px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.seccion-fila { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--gray-light); }
+.seccion-fila:last-child { border-bottom: none; }
+.seccion-fila-clic { cursor: pointer; }
+.seccion-fila-clic:hover { background: var(--gray-light); }
+.seccion-fila-texto { flex: 1; min-width: 0; }
+.seccion-fila-nombre { font-size: 13px; font-weight: 500; }
+.seccion-fila-sub { font-size: 11px; color: var(--gray); }
+.seccion-fila-cantidad { min-width: 30px; text-align: right; font-size: 12px; font-weight: 600; }
+
+@media (max-width: 1200px) {
+  .kpi2-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .secciones-grid { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 768px) {
+  .encabezado-vista { margin: -16px -16px 16px; padding: 16px; }
+  .encabezado-vista-titulo { font-size: 24px; }
+  .seccion { padding: 16px; }
+}
+@media (max-width: 480px) {
+  .kpi2-grid { grid-template-columns: minmax(0, 1fr); }
 }

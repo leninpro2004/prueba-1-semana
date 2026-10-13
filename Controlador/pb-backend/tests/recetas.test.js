@@ -469,7 +469,7 @@ describe('Permisos (CU-102)', () => {
     const jwt = require('jsonwebtoken');
     const { levantar } = require('./helpers/api');
     const url = await levantar();
-    const tecnico = jwt.sign({ id: 2, username: 'jop.test', rol: 'tecnico' }, process.env.JWT_SECRET, { expiresIn: '5m' });
+    const tecnico = jwt.sign({ id: 3, username: 'tecnico.test', rol: 'tecnico' }, process.env.JWT_SECRET, { expiresIn: '5m' });
     // Solo POST y PUT: siempre llevan cuerpo
     const pedir = (metodo, ruta, body) => {
       const opciones = { method: metodo, headers: { Authorization: `Bearer ${tecnico}`, 'Content-Type': 'application/json' } };
@@ -480,5 +480,88 @@ describe('Permisos (CU-102)', () => {
     assert.equal((await pedir('POST', '/api/recetas/1/duplicar', {})).status, 403);
     assert.equal((await pedir('PUT', '/api/recetas/1/estado', { activo: false })).status, 403);
     assert.equal((await pedir('PUT', '/api/recetas/1', { materiales: [] })).status, 403);
+  });
+});
+
+/* ══════════════════════════════════════════════════════════════════════
+   F-08 (D74): fórmula por línea de receta
+   ══════════════════════════════════════════════════════════════════════ */
+
+const formulaDe = async (id, sku) => (await db.query(
+  `SELECT material_producto_terminado_formula AS f FROM inventario.material_producto_terminado
+   WHERE producto_terminado_id_producto = $1 AND material_sku = $2`, [id, sku])).rows[0]?.f ?? null;
+
+describe('Fórmula por línea de receta (F-08)', () => {
+  const conFormula = (formula) => ({
+    nombre: 'Puerta por medidas', codigo: 'PB-MED',
+    materiales: [{ sku: 'MAT-UNO', cantidad_base: 5, area_id: 1, formula },
+                 { sku: 'MAT-FIFO', cantidad_base: 2, area_id: 1 }],
+  });
+
+  test('crear guarda la fórmula y conserva la cantidad fija de referencia', async () => {
+    const r = await api('POST', '/api/recetas', { body: conFormula('  (2 * marco_alto + marco_ancho) / 1000 ') });
+    assert.equal(r.status, 201, JSON.stringify(r.body));
+    assert.equal(await formulaDe(r.body.id, 'MAT-UNO'), '(2 * marco_alto + marco_ancho) / 1000');
+    assert.equal(await formulaDe(r.body.id, 'MAT-FIFO'), null);
+    const d = (await api('GET', `/api/recetas/${r.body.id}`)).body;
+    const uno = d.materiales.find(m => m.sku === 'MAT-UNO');
+    assert.equal(uno.formula, '(2 * marco_alto + marco_ancho) / 1000');
+    assert.equal(parseFloat(uno.cantidad_base), 5);
+  });
+
+  test('una fórmula inválida → 400 en esa fila y no se crea nada', async () => {
+    const antes = await cuantasRecetas();
+    for (const f of ['ancho * 2', 'process.exit()', 'vano_ancho - 9000', '(1 + 2']) {
+      const r = await api('POST', '/api/recetas', { body: conFormula(f) });
+      assert.equal(r.status, 400, f);
+      assert.equal(r.body.errores[0].campo, 'formula', f);
+    }
+    assert.equal(await cuantasRecetas(), antes);
+  });
+
+  test('editar puede poner y quitar la fórmula', async () => {
+    const poner = await api('PUT', '/api/recetas/1', { body: { materiales: [
+      { sku: 'MAT-FIFO', cantidad_base: 2, merma: 0.25, area_id: 1, formula: 'vano_ancho / 1000' },
+      { sku: 'MAT-CRIT', cantidad_base: 4, area_id: 1 }] } });
+    assert.equal(poner.status, 200, JSON.stringify(poner.body));
+    assert.equal(await formulaDe(1, 'MAT-FIFO'), 'vano_ancho / 1000');
+
+    const quitar = await api('PUT', '/api/recetas/1', { body: { materiales: [
+      { sku: 'MAT-FIFO', cantidad_base: 2, merma: 0.25, area_id: 1, formula: '' },
+      { sku: 'MAT-CRIT', cantidad_base: 4, area_id: 1 }] } });
+    assert.equal(quitar.status, 200);
+    assert.equal(await formulaDe(1, 'MAT-FIFO'), null);
+  });
+
+  test('un material inactivo se conserva sin cambios, pero no si le cambian la fórmula', async () => {
+    await db.query(`UPDATE inventario.material_producto_terminado SET material_producto_terminado_formula = 'hojas'
+                    WHERE producto_terminado_id_producto = 1 AND material_sku = 'MAT-CRIT'`);
+    await db.query(`UPDATE inventario.material SET material_estado = 'inactivo' WHERE material_sku = 'MAT-CRIT'`);
+    const igual = { sku: 'MAT-CRIT', cantidad_base: 4, area_id: 1, formula: 'hojas' };
+    const fifo = { sku: 'MAT-FIFO', cantidad_base: 2, merma: 0.25, area_id: 1 };
+
+    assert.equal((await api('PUT', '/api/recetas/1', { body: { materiales: [fifo, igual] } })).status, 200);
+    const cambia = await api('PUT', '/api/recetas/1', { body: { materiales: [fifo, { ...igual, formula: 'hojas * 2' }] } });
+    assert.equal(cambia.status, 400);
+    assert.equal(await formulaDe(1, 'MAT-CRIT'), 'hojas');
+  });
+
+  test('duplicar copia la fórmula', async () => {
+    await db.query(`UPDATE inventario.material_producto_terminado SET material_producto_terminado_formula = 'hojas * 2'
+                    WHERE producto_terminado_id_producto = 1 AND material_sku = 'MAT-CRIT'`);
+    const r = await api('POST', '/api/recetas/1/duplicar', { body: { nombre: 'Puerta de prueba v2', codigo: 'PB-TEST-V2' } });
+    assert.equal(r.status, 201);
+    assert.equal(await formulaDe(r.body.id, 'MAT-CRIT'), 'hojas * 2');
+  });
+
+  test('probar una fórmula con la puerta de ejemplo (ayudante del editor)', async () => {
+    const ok = await api('GET', '/api/recetas/probar-formula?formula=' + encodeURIComponent('(2 * marco_alto + marco_ancho) / 1000'));
+    assert.equal(ok.status, 200);
+    assert.equal(ok.body.ejemplo, 5.185);
+    assert.equal(ok.body.variables.marco_ancho, 995);
+
+    const mala = await api('GET', '/api/recetas/probar-formula?formula=' + encodeURIComponent('ancho * 2'));
+    assert.equal(mala.status, 400);
+    assert.match(mala.body.error, /desconocida/);
   });
 });

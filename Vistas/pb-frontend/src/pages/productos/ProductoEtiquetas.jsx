@@ -126,7 +126,7 @@ export default function ProductoEtiquetas() {
         <div className="page-header">
           <div>
             <div className="page-title">Etiquetas de código de barras</div>
-            <div className="page-subtitle">Code128 para el producto, su caja o su bandeja (CU-30)</div>
+            <div className="page-subtitle">Code128 para el producto, su caja o su bandeja</div>
           </div>
           <Link to="/productos" className="btn btn-secondary">← Volver a productos</Link>
         </div>

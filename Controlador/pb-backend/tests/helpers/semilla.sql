@@ -37,7 +37,9 @@ OVERRIDING SYSTEM VALUE VALUES
   (4, 'ajuste_inventario',   3),
   (5, 'reverso_autorizado',  NULL),  -- CU-44: motivo del movimiento inverso
   (6, 'devolucion_consumo',  NULL),  -- devoluciones de consumo de OT y pinturas: restan del consumo
-  (7, 'despacho_venta',      1);     -- CU-127: salida de un pedido de instalación (cuenta como consumo)
+  (7, 'despacho_venta',      1),     -- CU-127: salida de un pedido de instalación (cuenta como consumo)
+  (8, 'carga_inicial',       NULL),  -- F-03 (D78): stock inicial del importador
+  (13, 'compra_caja_chica',  NULL);  -- F-23 (D86): mismo id que en catalogos_inventario.sql (9 a 11 los usan otros tests)
 
 -- Catalogo de alertas. Los nombres son los CANONICOS que quedaron tras consolidar
 -- los duplicados del 2026-09-20: el generador los busca por match EXACTO sobre el
@@ -84,13 +86,18 @@ OVERRIDING SYSTEM VALUE VALUES
   (1, 'Proveedor Test', 'activo', 'Aceros', 'distribuidor', 'Chile', 'Ana', 'Rojas'),
   (2, 'Proveedor Sin Uso', 'activo', 'Varios', NULL, NULL, NULL, NULL);
 
--- ── Usuarios: uno de gerencia y uno de JOP ──────────────────
+-- ── Usuarios: uno por rol ───────────────────────────────────
+-- B-01: el rol sale de la BD en cada request, así que cada rol de los tests necesita su usuario
+-- (helpers/api.js → token(rol) usa estos ids).
 INSERT INTO usuario (usuario_id_usuario, usuario_username, usuario_estado_cuenta,
                      usuario_es_gerencia, usuario_es_tecnico, usuario_es_jop,
                      usuario_es_administrador, usuario_es_secretaria)
 OVERRIDING SYSTEM VALUE VALUES
-  (1, 'gerente.test', 'activo', TRUE,  FALSE, FALSE, FALSE, FALSE),
-  (2, 'jop.test',     'activo', FALSE, FALSE, TRUE,  FALSE, FALSE);
+  (1, 'gerente.test',    'activo', TRUE,  FALSE, FALSE, FALSE, FALSE),
+  (2, 'jop.test',        'activo', FALSE, FALSE, TRUE,  FALSE, FALSE),
+  (3, 'tecnico.test',    'activo', FALSE, TRUE,  FALSE, FALSE, FALSE),
+  (4, 'secretaria.test', 'activo', FALSE, FALSE, FALSE, FALSE, TRUE),
+  (5, 'admin.test',      'activo', FALSE, FALSE, FALSE, TRUE,  FALSE);
 
 -- CU-108 (V1): perfiles por nombre de rol. 'bodeguero' no tiene usuarios a proposito.
 INSERT INTO perfil (perfil_id_perfil, perfil_nombre_perfil)

@@ -1,5 +1,6 @@
 const { query } = require('../db/pool');
 const { ErrorNegocio, conTransaccion, responderError } = require('../db/tx');
+const { ESTADOS_OT_CERRADA } = require('../db/estadosOT');
 
 /**
  * OPUS-3: reserva FIFO de stock para un material, bloqueando las filas de
@@ -383,6 +384,7 @@ async function reportarDiscrepancia(req, res) {
       tipo: 'discrepancia_checklist',
       mensaje: `Discrepancia reportada en OT #${id} para ${sku}: ${tipo || 'general'} — ${descripcion}`,
       origen: 'pedidos',
+      ruta: '/pedidos/checklist',
       rol: 'jop'
     });
 
@@ -447,7 +449,7 @@ async function reservar(req, res) {
       if (ot.length === 0) {
         throw new ErrorNegocio(404, { error: 'Orden de trabajo no encontrada' });
       }
-      if (['cancelada', 'finalizada', 'completada', 'cerrada'].includes(String(ot[0].estado).toLowerCase())) {
+      if (ESTADOS_OT_CERRADA.includes(String(ot[0].estado).toLowerCase())) {
         throw new ErrorNegocio(400, { error: 'No se puede reservar stock para una OT cerrada o cancelada' });
       }
 
@@ -475,10 +477,11 @@ async function reservar(req, res) {
              reserva_inventario_estado_reserva,
              material_sku,
              orden_trabajo_id_orden,
-             proyecto_id_proyecto
-           ) VALUES ($1, 'activa', $2, $3, $4)
+             proyecto_id_proyecto,
+             usuario_id_usuario
+           ) VALUES ($1, 'activa', $2, $3, $4, $5)
            RETURNING reserva_inventario_id_reserva AS id`,
-          [cantidad, sku, id, ot[0].proyecto_id || null]
+          [cantidad, sku, id, ot[0].proyecto_id || null, req.user.id]
         );
 
         out.push({ sku, estado: 'reservado', id: reserva[0]?.id, cantidad, lotes: fifo.lotes.length });

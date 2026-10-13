@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
 import { API } from '../../services/api';
 import { formatQty, formatMoney } from '../../utils/format';
 import { exportarCSV } from '../../utils/csvExport';
@@ -9,6 +8,7 @@ import Alert, { useAlert } from '../../components/Alert';
 import BotonExportar from '../../components/BotonExportar';
 import { BarrasAgrupadas, BarrasHorizontales, LineaTemporal, descargarGrafico } from '../../components/Charts';
 import { ocultaMontos } from '../../utils/user';
+import ReportesNav from '../../components/ReportesNav';
 
 const MSG_INICIAL = 'Seleccione fechas y presione "Generar reporte"';
 
@@ -150,16 +150,13 @@ export default function ReporteConsumoArea() {
 
   return (
     <>
+      <ReportesNav />
       <div className="page-header">
         <div>
           <div className="page-title">Consumo por Área de Trabajo</div>
           <div className="page-subtitle">Análisis de materiales consumidos por área y período</div>
         </div>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          <Link to="/reportes/movimientos" className="btn btn-ghost">← Reportes</Link>
-          <Link to="/reportes/mermas" className="btn btn-ghost">Mermas</Link>
-          {!ocultaMontos(user) && <Link to="/reportes/valorizacion" className="btn btn-ghost">Valorización</Link>}
-          <Link to="/reportes/programacion" className="btn btn-ghost">Programación</Link>
         </div>
       </div>
 

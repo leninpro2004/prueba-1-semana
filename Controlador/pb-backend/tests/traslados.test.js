@@ -1,6 +1,6 @@
 const { test, before, after, beforeEach, describe } = require('node:test');
 const assert = require('node:assert/strict');
-const { api, bajar, autorizacion } = require('./helpers/api');
+const { api, bajar } = require('./helpers/api');
 const db = require('./helpers/db');
 const { stockAFecha, consumoNeto } = require('../src/db/historico');
 
@@ -145,7 +145,7 @@ describe('Traslado: historial y reversión', () => {
     await trasladar(base({ cantidad: 4 }));
     const antes = await porBodegaYLote();
     for (const m of await movimientosTraslado()) {
-      const r = await api('POST', `/api/movimientos/${m.id}/revertir`, { body: { autorizacion: autorizacion(m.id) } });
+      const r = await api('POST', `/api/movimientos/${m.id}/revertir`);
       assert.equal(r.status, 400, JSON.stringify(r.body));
       assert.match(r.body.error, /traslado en sentido contrario/);
     }

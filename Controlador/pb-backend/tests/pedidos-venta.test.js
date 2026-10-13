@@ -1,6 +1,6 @@
 const { test, before, after, beforeEach, describe } = require('node:test');
 const assert = require('node:assert/strict');
-const { api, bajar, autorizacion } = require('./helpers/api');
+const { api, bajar } = require('./helpers/api');
 const db = require('./helpers/db');
 
 /**
@@ -84,6 +84,13 @@ describe('Listado y sugerencia', () => {
     assert.equal(r.body.editable, true);
   });
 
+  test('F-04: renombrar el área de instalación desde Catálogos no cambia la sugerencia', async () => {
+    const ren = await api('PUT', '/api/catalogos/areas/3', { body: { nombre: 'Montaje en obra' } });
+    assert.equal(ren.status, 200, JSON.stringify(ren.body));
+    const r = await api('GET', '/api/pedidos-venta/1');
+    assert.deepEqual(r.body.sugerencia.map(s => [s.sku, s.cantidad]), [['MAT-UNO', 2], ['PIN-TEST', 1]]);
+  });
+
   test('Exc 1: una venta sin insumos de instalación pide cargarlos; sin líneas no se vincula', async () => {
     const r = await api('GET', '/api/pedidos-venta/3');
     assert.deepEqual(r.body.sugerencia, []);
@@ -95,7 +102,7 @@ describe('Listado y sugerencia', () => {
     const jwt = require('jsonwebtoken');
     const { levantar } = require('./helpers/api');
     const url = await levantar();
-    const tecnico = jwt.sign({ id: 2, username: 'jop.test', rol: 'tecnico' }, process.env.JWT_SECRET, { expiresIn: '5m' });
+    const tecnico = jwt.sign({ id: 3, username: 'tecnico.test', rol: 'tecnico' }, process.env.JWT_SECRET, { expiresIn: '5m' });
     const r = await fetch(url + '/api/pedidos-venta', { headers: { Authorization: `Bearer ${tecnico}` } });
     assert.equal(r.status, 403);
   });
@@ -116,6 +123,10 @@ describe('Vincular', () => {
        FROM inventario.preparacion_pedido_estado e JOIN inventario.preparacion_pedido p USING (preparacion_pedido_id_preparacion)
        WHERE p.nota_venta_id_nota_venta = 1`);
     assert.deepEqual(rows, [{ estado: 'vinculado', usuario: 2 }]);
+    // Sesión 15b: cada reserva guarda quién la creó (la lista de Reservas lo muestra)
+    const { rows: usuarios } = await db.query(
+      `SELECT DISTINCT usuario_id_usuario::int AS usuario FROM inventario.reserva_inventario WHERE nota_venta_id_nota_venta = 1`);
+    assert.deepEqual(usuarios, [{ usuario: 2 }]);
   });
 
   test('Exc 2: sin stock suficiente reserva lo que hay y deja el faltante (vinculación parcial)', async () => {
@@ -454,7 +465,7 @@ describe('Retiro de insumos (CU-126)', () => {
     const jwt = require('jsonwebtoken');
     const { levantar } = require('./helpers/api');
     const url = await levantar();
-    const tecnico = jwt.sign({ id: 2, username: 'jop.test', rol: 'tecnico' }, process.env.JWT_SECRET, { expiresIn: '5m' });
+    const tecnico = jwt.sign({ id: 3, username: 'tecnico.test', rol: 'tecnico' }, process.env.JWT_SECRET, { expiresIn: '5m' });
     const r = await fetch(url + '/api/pedidos-venta/1/retiro/MAT-FIFO', {
       method: 'PUT', headers: { Authorization: `Bearer ${tecnico}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ cantidad: 1 }) });
     assert.equal(r.status, 403);
@@ -554,7 +565,7 @@ describe('Carga en transporte (CU-125)', () => {
     const jwt = require('jsonwebtoken');
     const { levantar } = require('./helpers/api');
     const url = await levantar();
-    const tecnico = jwt.sign({ id: 2, username: 'jop.test', rol: 'tecnico' }, process.env.JWT_SECRET, { expiresIn: '5m' });
+    const tecnico = jwt.sign({ id: 3, username: 'tecnico.test', rol: 'tecnico' }, process.env.JWT_SECRET, { expiresIn: '5m' });
     const r = await fetch(url + '/api/pedidos-venta/1/carga', {
       method: 'POST', headers: { Authorization: `Bearer ${tecnico}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ empleado_rut: EMPLEADO }) });
@@ -634,7 +645,7 @@ describe('Salida del transporte (CU-127)', () => {
        WHERE movimiento_inventario_referencia_origen = 'NV-A'`);
     const antes = await db.stockDe('MAT-FIFO');
     for (const { id } of rows) {
-      const r = await api('POST', `/api/movimientos/${id}/revertir`, { body: { autorizacion: autorizacion(id) } });
+      const r = await api('POST', `/api/movimientos/${id}/revertir`);
       assert.equal(r.status, 400, JSON.stringify(r.body));
       assert.match(r.body.error, /despacho de la venta NV-A/);
       // CU-42: se rechaza antes de pedir la contraseña
@@ -691,7 +702,7 @@ describe('Salida del transporte (CU-127)', () => {
     const jwt = require('jsonwebtoken');
     const { levantar } = require('./helpers/api');
     const url = await levantar();
-    const tecnico = jwt.sign({ id: 2, username: 'jop.test', rol: 'tecnico' }, process.env.JWT_SECRET, { expiresIn: '5m' });
+    const tecnico = jwt.sign({ id: 3, username: 'tecnico.test', rol: 'tecnico' }, process.env.JWT_SECRET, { expiresIn: '5m' });
     const r = await fetch(url + '/api/pedidos-venta/1/salida', {
       method: 'PUT', headers: { Authorization: `Bearer ${tecnico}`, 'Content-Type': 'application/json' }, body: '{}' });
     assert.equal(r.status, 403);
@@ -783,9 +794,91 @@ describe('Trazabilidad (CU-121)', () => {
     const jwt = require('jsonwebtoken');
     const { levantar } = require('./helpers/api');
     const url = await levantar();
-    const tecnico = jwt.sign({ id: 2, username: 'jop.test', rol: 'tecnico' }, process.env.JWT_SECRET, { expiresIn: '5m' });
+    const tecnico = jwt.sign({ id: 3, username: 'tecnico.test', rol: 'tecnico' }, process.env.JWT_SECRET, { expiresIn: '5m' });
     const r = await fetch(url + '/api/pedidos-venta/trazabilidad?q=NV-A', { headers: { Authorization: `Bearer ${tecnico}` } });
     assert.equal(r.status, 403);
+  });
+});
+
+describe('Trazabilidad por pedido (F-12)', () => {
+  const resumenDe = async (q) => (await traza(q)).body.pedidos[0].resumen;
+
+  test('recién vinculado: el pedido está en Preparación con 3 de 7 etapas por insumo', async () => {
+    await vincular(1, completa);
+    const { etapas, ...resto } = await resumenDe('NV-A');
+    assert.deepEqual(resto, {
+      etapa: 'preparacion', etapa_titulo: 'Preparación', etapa_estado: 'pendiente',
+      porcentaje: 43, insumos: 2, insumos_completos: 0,
+    });
+    // Una sola línea de tiempo para el pedido
+    assert.deepEqual(Object.fromEntries(etapas.map(e => [e.clave, e.estado])), {
+      ingreso: 'completada', bodega: 'completada', vinculacion: 'completada',
+      preparacion: 'pendiente', retiro: 'pendiente', carga: 'pendiente', despacho: 'pendiente',
+    });
+    assert.equal(etapas.find(e => e.clave === 'ingreso').detalle, '2 de 2 insumos');
+  });
+
+  test('un retiro parcial deja al pedido en Retiro aunque otro insumo ya esté retirado', async () => {
+    await vincular(1, completa);
+    await preparar(1);
+    await retirar(1, 'PIN-TEST', 1);
+    await retirar(1, 'MAT-FIFO', 2);                    // de 4
+    const r = await resumenDe('NV-A');
+    assert.equal(r.etapa, 'retiro');
+    assert.equal(r.etapa_estado, 'parcial');
+    assert.equal(r.porcentaje, 64);                     // (5 + 4) de 14
+    const retiro = r.etapas.find(e => e.clave === 'retiro');
+    assert.equal(retiro.estado, 'parcial');
+    assert.match(retiro.detalle, /^1 de 2 insumos\. Faltan: .+ \(parcial\)$/);
+    assert.ok(retiro.fecha, 'la fecha del que sí se retiró');
+  });
+
+  test('despachado: 100 % y todos los insumos completos', async () => {
+    await vincular(1, completa);
+    await preparar(1);
+    await retirar(1, 'MAT-FIFO', 4); await retirar(1, 'PIN-TEST', 1);
+    await cargar(1, { empleado_rut: EMPLEADO });
+    await despachar(1);
+    const r = await resumenDe('NV-A');
+    assert.equal(r.etapa, 'despachado');
+    assert.equal(r.porcentaje, 100);
+    assert.equal(r.insumos_completos, 2);
+    assert.ok(r.etapas.every(e => e.estado === 'completada'));
+    assert.match(r.etapas.find(e => e.clave === 'carga').detalle, /Empleado Test/);
+  });
+
+  test('por SKU: el avance es el del pedido completo aunque solo venga ese insumo', async () => {
+    await vincular(1, completa);
+    const [p] = (await traza('PIN-TEST')).body.pedidos;
+    assert.equal(p.insumos.length, 1);
+    assert.equal(p.resumen.insumos, 2);
+  });
+
+  test('lo pedido trae las medidas de cada ítem y ningún precio', async () => {
+    await db.query(`UPDATE finanzas.item_nota_venta SET alto = 2100, ancho = 900, espesor = 70
+                    WHERE id_nota_venta = 1 AND requiere_instalacion`);
+    await vincular(1, completa);
+    const [p] = (await traza('NV-A')).body.pedidos;
+    const puerta = p.items.find(i => i.requiere_instalacion);
+    assert.deepEqual([puerta.alto, puerta.ancho, puerta.espesor], [2100, 900, 70]);
+    assert.ok(!JSON.stringify(p.items).includes('precio'), 'sin precios');
+    assert.equal((await api('GET', '/api/pedidos-venta/1')).body.items.find(i => i.requiere_instalacion).alto, 2100);
+  });
+
+  test('por cliente, sin distinguir mayúsculas ni tildes: los vinculados primero y los sin vincular sin avance', async () => {
+    await db.query(`INSERT INTO finanzas.cliente_financiero (id_cliente_financiero, rut_cliente, id_tipo_cliente, nombre_razon_social)
+                    OVERRIDING SYSTEM VALUE VALUES (2, '33333333-3', 1, 'Constructora Los Ándes SpA')`);
+    await db.query(`INSERT INTO finanzas.nota_venta (id_nota_venta, numero_nota_venta, id_cliente_financiero, fecha_emision, estado_pedido)
+                    OVERRIDING SYSTEM VALUE VALUES (5, 'NV-LA1', 2, CURRENT_DATE, 'aprobada'), (6, 'NV-LA2', 2, CURRENT_DATE, 'aprobada'),
+                                                   (7, 'NV-LA3', 2, CURRENT_DATE, 'pendiente')`);   // pendiente: no se lista
+    await vincular(6, { lineas: [{ sku: 'MAT-FIFO', cantidad: 1, bodega_id: 1 }] });
+    const r = await traza('los andes', 'jop');
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.equal(r.body.tipo, 'busqueda');
+    assert.deepEqual(r.body.pedidos.map(p => [p.venta.numero, p.resumen?.etapa ?? null]),
+      [['NV-LA2', 'preparacion'], ['NV-LA1', null]]);
+    assert.equal((await traza('nv-la')).body.pedidos.length, 2);   // parte del número
+    assert.equal((await traza('Cliente que no existe')).status, 404);
   });
 });
 

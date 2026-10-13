@@ -605,13 +605,27 @@ async function devolverAsignacion(req, res) {
   }
 }
 
+const FECHA_ISO = /^\d{4}-\d{2}-\d{2}$/;
+const ESTADOS_ASIGNACION = ['asignada', 'devuelta', 'perdida', 'dada_de_baja'];
+
 /**
- * GET /api/herramientas/asignaciones?sku=&empleado_rut=&area_trabajo_id=&estado=
+ * GET /api/herramientas/asignaciones?sku=&empleado_rut=&area_trabajo_id=&estado=&desde=&hasta=
  * Por defecto lista solo las vigentes.
+ * F-15: desde/hasta (AAAA-MM-DD) dejan las asignaciones vigentes en algún momento del período:
+ * entregadas antes de que termine y no devueltas antes de que empiece.
+ * resumen.por_estado cuenta cada estado con los demás filtros pero sin el de estado, para que
+ * la franja de totales no salga en 0 cuando se mira solo "Vigentes".
  */
 async function listarAsignaciones(req, res) {
-  const { sku, empleado_rut, area_trabajo_id, estado } = req.query;
-  const filtroEstado = !estado || estado === 'todos' ? null : estado;
+  const { sku, empleado_rut, area_trabajo_id, estado, desde, hasta } = req.query;
+  const filtroEstado = !estado ? 'asignada' : estado === 'todos' ? null : estado;
+
+  if ((desde && !FECHA_ISO.test(desde)) || (hasta && !FECHA_ISO.test(hasta))) {
+    return res.status(400).json({ error: 'Las fechas deben tener el formato AAAA-MM-DD.' });
+  }
+  if (desde && hasta && desde > hasta) {
+    return res.status(400).json({ error: 'La fecha de inicio es posterior a la fecha de fin. Corrija el rango antes de consultar.' });
+  }
 
   try {
     const { rows } = await query(
@@ -634,19 +648,25 @@ async function listarAsignaciones(req, res) {
        WHERE ($1::text   IS NULL OR a.material_sku ILIKE $1)
          AND ($2::text   IS NULL OR a.empleado_rut = $2)
          AND ($3::bigint IS NULL OR a.area_trabajo_id = $3::bigint)
-         AND ($4::text   IS NULL OR a.estado = $4)
+         AND ($4::date   IS NULL OR a.fecha_devolucion IS NULL OR a.fecha_devolucion >= $4::date)
+         AND ($5::date   IS NULL OR a.fecha_asignacion < ($5::date + INTERVAL '1 day'))
        ORDER BY a.estado = 'asignada' DESC, a.fecha_asignacion DESC`,
-      [sku || null, empleado_rut || null, area_trabajo_id || null,
-       filtroEstado === null && !estado ? 'asignada' : filtroEstado]
+      [sku || null, empleado_rut || null, area_trabajo_id || null, desde || null, hasta || null]
     );
 
-    const asignaciones = rows.map(r => ({ ...r, cantidad: parseInt(r.cantidad) }));
+    const todas = rows.map(r => ({ ...r, cantidad: parseInt(r.cantidad) }));
+    const por_estado = Object.fromEntries(ESTADOS_ASIGNACION.map(e => {
+      const deEste = todas.filter(a => a.estado === e);
+      return [e, { asignaciones: deEste.length, unidades: deEste.reduce((s, a) => s + a.cantidad, 0) }];
+    }));
+    const asignaciones = filtroEstado === null ? todas : todas.filter(a => a.estado === filtroEstado);
     res.json({
       resumen: {
         total: asignaciones.length,
         vigentes: asignaciones.filter(a => a.estado === 'asignada').length,
         unidades_asignadas: asignaciones.filter(a => a.estado === 'asignada').reduce((s, a) => s + a.cantidad, 0),
         perdidas: asignaciones.filter(a => a.estado === 'perdida').length,
+        por_estado,
       },
       asignaciones,
     });

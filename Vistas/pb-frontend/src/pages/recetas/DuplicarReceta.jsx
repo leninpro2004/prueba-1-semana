@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { API } from '../../services/api';
+import { AvisoCerrable } from '../../components/Alert';
 
 /**
  * CU-102 Exc 2: crear una receta nueva a partir de otra ("nueva versión conservando
@@ -75,7 +76,7 @@ export default function DuplicarReceta({ receta, onCerrar, onDuplicada }) {
               </span>
             </label>
           )}
-          {error && <div className="alert alert-danger" style={{ marginTop: 12, marginBottom: 0 }}>{error}</div>}
+          {error && <AvisoCerrable className="alert alert-danger" style={{ marginTop: 12, marginBottom: 0 }}>{error}</AvisoCerrable>}
         </div>
         <div className="modal-footer" style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, padding: '12px 20px' }}>
           <button type="button" className="btn btn-ghost" onClick={onCerrar}>Cancelar</button>

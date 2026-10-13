@@ -2,6 +2,7 @@ const express = require('express');
 const router  = express.Router();
 const ctrl    = require('../controllers/proveedoresController');
 const { authMiddleware, soloGerencia, soloOperativo } = require('../middleware/auth');
+const { requiereFirma } = require('../middleware/firma');
 
 router.use(authMiddleware);
 
@@ -15,9 +16,9 @@ router.get('/:id/precios', soloGerencia, ctrl.precios);
 router.get('/:id/cumplimiento', ctrl.cumplimiento);
 // D62: crear exige rol operativo; editar, activar/desactivar y eliminar, gerencia (como la pantalla)
 router.post('/',    soloOperativo, ctrl.crear);
-router.put('/:id',  soloGerencia, ctrl.actualizar);
+router.put('/:id',  soloGerencia, requiereFirma('precio_proveedor'), ctrl.actualizar);
 // Activar / desactivar: aparte de actualizar, para no arrastrar el resto del formulario
-router.put('/:id/estado', soloGerencia, ctrl.cambiarEstado);
-router.delete('/:id', soloGerencia, ctrl.eliminar);
+router.put('/:id/estado', soloGerencia, requiereFirma('precio_proveedor'), ctrl.cambiarEstado);
+router.delete('/:id', soloGerencia, requiereFirma('precio_proveedor'), ctrl.eliminar);
 
 module.exports = router;

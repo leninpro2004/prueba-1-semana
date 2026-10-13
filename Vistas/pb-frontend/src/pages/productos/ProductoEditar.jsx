@@ -103,8 +103,9 @@ export default function ProductoEditar() {
 
           // Pre-seleccionar clasificación en cascada si el producto tiene nivel
           let oCat = '', oSub = '', oNivel = '';
-          if (prod.clasificacion_nivel) {
-            const nivel = cl.niveles.find(n => n.nombre === prod.clasificacion_nivel);
+          // Por id, no por nombre: el mismo nombre de nivel ("General") se repite en varias subcategorías
+          if (prod.clasificacion_nivel_id) {
+            const nivel = cl.niveles.find(n => String(n.id) === String(prod.clasificacion_nivel_id));
             if (nivel) {
               const sub = cl.subcategorias.find(s => s.id === nivel.subcategoria_id);
               if (sub) {

@@ -16,7 +16,7 @@ const POLL_MS = 60 * 1000; // 60s
  * que el cierre ocurra aunque el usuario tenga la pantalla quieta.
  */
 export function useAccountStatus() {
-  const { user, logout } = useAuth();
+  const { user, logout, recargarUsuario } = useAuth();
   const cerrando = useRef(false);
 
   useEffect(() => {
@@ -30,6 +30,9 @@ export function useAccountStatus() {
         if (estado && estado.activo === false) {
           cerrando.current = true;
           logout('cuenta_desactivada');
+        } else if (estado?.rol && estado.rol !== user.rol) {
+          // B-01: gerencia cambió el rol; menús y pantallas se ajustan sin cerrar la sesión
+          recargarUsuario();
         }
       } catch (err) {
         // Un 401 por cuenta desactivada llega aquí como error con su código
@@ -45,5 +48,5 @@ export function useAccountStatus() {
     const id = setInterval(revisar, POLL_MS);
     revisar(); // primera comprobación al montar
     return () => clearInterval(id);
-  }, [user, logout]);
+  }, [user, logout, recargarUsuario]);
 }

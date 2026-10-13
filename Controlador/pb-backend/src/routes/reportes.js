@@ -15,6 +15,7 @@ function soloGerenciaOJop(req, res, next) {
   next();
 }
 
+router.get('/resumen',              ctrl.resumen);              // B-08b: indicadores del mes (índice)
 router.get('/movimientos',          ctrl.reporteMovimientos);
 router.get('/mermas',               ctrl.reporteMermas);
 // Incremento 2

@@ -47,7 +47,7 @@ function CumplimientoEntregas({ provId }) {
   return (
     <div className="card" style={{ marginTop: 20 }}>
       <div className="section-label">Cumplimiento de entregas</div>
-      {error && <div className="alert alert-danger">{error}</div>}
+      <Alert type="danger" message={error} onClose={() => setError('')} />
       {!datos && !error && <p style={{ fontSize: 13, color: 'var(--gray)' }}>Cargando…</p>}
 
       {r && !r.disponible && (
@@ -171,7 +171,7 @@ function HistorialPrecios({ provId }) {
   return (
     <div className="card" style={{ marginTop: 20 }}>
       <div className="section-label">Historial de precios</div>
-      {aviso && <div className={`alert alert-${aviso.type}`} style={{ fontSize: 12 }}>{aviso.msg}</div>}
+      {aviso && <Alert type={aviso.type} message={aviso.msg} style={{ fontSize: 12 }} onClose={() => setAviso(null)} />}
 
       {sinHistorial ? (
         <div className="empty-state"><div className="empty-state-icon">💲</div><p>Este proveedor no registra historial de costos para analizar.</p></div>
@@ -323,7 +323,7 @@ export default function ProveedorDetalle() {
       {/* Materiales que provee */}
       <div className="card">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-          <div className="section-label" style={{ marginBottom: 0 }}>Materiales suministrados (FR-41)</div>
+          <div className="section-label" style={{ marginBottom: 0 }}>Materiales suministrados</div>
           <div style={{ fontSize: 12, color: 'var(--gray)' }} id="materiales-count">{p ? `${materiales.length} material(es) asociado(s)` : ''}</div>
         </div>
         <div className="table-wrap">

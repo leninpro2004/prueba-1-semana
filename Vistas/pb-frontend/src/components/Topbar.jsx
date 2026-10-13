@@ -3,6 +3,7 @@ import { useAuth } from '../hooks/useAuth';
 import { useNotifications, obtenerDestinoNotif, formatearMensajeNotif } from '../hooks/useNotifications';
 import { TitleContext } from '../contexts/TitleContext';
 import { getInitials } from '../utils/user';
+import { PALETAS, leerPaleta, aplicarPaleta, VISTAS, aplicarVista, useVista } from '../utils/paleta';
 
 /**
  * Topbar — conversión de shared/topbar.html + campana de notificaciones (CU-45) de layout.js.
@@ -12,6 +13,8 @@ export default function Topbar({ onHamburger }) {
   const { title } = useContext(TitleContext);
   const { noLeidas, lista, error, cargarLista, marcarTodas, navegar } = useNotifications();
   const [open, setOpen] = useState(false);
+  const [paleta, setPaleta] = useState(leerPaleta);
+  const vista = useVista();
   const dropdownRef = useRef(null);
   const bellRef = useRef(null);
 
@@ -55,6 +58,28 @@ export default function Topbar({ onHamburger }) {
       <span className="topbar-title" id="topbar-title">{title}</span>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        {/* F-25a y F-25a' (D82, N-14): selectores de paleta y composición para que el cliente compare; solo gerencia */}
+        {user?.rol === 'gerencia' && (
+          <select
+            className="form-control" aria-label="Composición de la vista" title="Composición de la vista (demostración)"
+            style={{ width: 'auto', fontSize: 12, padding: '4px 8px' }}
+            value={vista}
+            onChange={e => aplicarVista(e.target.value)}
+          >
+            {VISTAS.map(v => <option key={v.valor} value={v.valor}>Vista: {v.etiqueta}</option>)}
+          </select>
+        )}
+        {user?.rol === 'gerencia' && (
+          <select
+            className="form-control" aria-label="Paleta de colores" title="Paleta de colores (demostración)"
+            style={{ width: 'auto', fontSize: 12, padding: '4px 8px' }}
+            value={paleta}
+            onChange={e => { setPaleta(e.target.value); aplicarPaleta(e.target.value); }}
+          >
+            {PALETAS.map(p => <option key={p.valor} value={p.valor}>Paleta: {p.etiqueta}</option>)}
+          </select>
+        )}
+
         {/* Campana de notificaciones (CU-45) */}
         <div id="notif-bell" ref={bellRef} style={{ position: 'relative', cursor: 'pointer' }} title="Notificaciones" onClick={toggle}>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" width="20" height="20" style={{ pointerEvents: 'none' }}>

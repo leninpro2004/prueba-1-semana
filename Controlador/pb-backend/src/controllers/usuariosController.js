@@ -1,9 +1,43 @@
 const bcrypt   = require('bcrypt');
+const crypto   = require('crypto');
 const { query } = require('../db/pool');
 const { ErrorNegocio, conTransaccion, responderError } = require('../db/tx');
+const { SQL_ESTADOS_OT_CERRADA } = require('../db/estadosOT');
 const audLog = require('./auditoriaController');
+const { validarResponsable } = require('./ordenesTrabajoController');   // B-03
 
 // CU-84 CP3: Flag es_temporal en usuario_contrasena (persistido en BD)
+
+// D68: la cuenta solo guarda 'activo' o 'inactivo' (CHECK en el DDL). Se acepta tambien
+// la forma femenina, que es la que mandaba la pantalla de Usuarios.
+const ESTADOS_CUENTA = ['activo', 'inactivo'];
+function normalizarEstado(estado) {
+  const e = String(estado).trim().toLowerCase();
+  if (e === 'activa') return 'activo';
+  if (e === 'inactiva') return 'inactivo';
+  return e;
+}
+
+/**
+ * B-19: los 5 roles. Una cuenta tiene UNA sola marca usuario_es_* en TRUE (jop si ninguna);
+ * si hubiera más de una, manda la misma prioridad que rolDe() en middleware/auth.js.
+ */
+const ROLES = ['gerencia', 'jop', 'tecnico', 'administrador', 'secretaria'];
+const ROL_EFECTIVO = `CASE
+           WHEN u.usuario_es_gerencia      THEN 'gerencia'
+           WHEN u.usuario_es_tecnico       THEN 'tecnico'
+           WHEN u.usuario_es_administrador THEN 'administrador'
+           WHEN u.usuario_es_secretaria    THEN 'secretaria'
+           ELSE 'jop'
+         END`;
+const ERROR_ROL = { error: 'El rol debe ser gerencia, jop, tecnico, administrador o secretaria.' };
+
+/** B-04: el estado de la cuenta con las programaciones vencidas ya aplicadas (alias u). */
+const ESTADO_EFECTIVO = `CASE
+           WHEN u.usuario_desactivacion_programada <= now() THEN 'inactivo'
+           WHEN u.usuario_activacion_programada    <= now() THEN 'activo'
+           ELSE u.usuario_estado_cuenta
+         END`;
 
 /**
  * GET /api/usuarios
@@ -17,7 +51,8 @@ async function listar(req, res) {
          u.usuario_id_usuario                                    AS id,
          u.usuario_username                                      AS username,
          u.usuario_correo                                        AS correo,
-         u.usuario_estado_cuenta                                 AS estado,
+         -- B-04: estado EFECTIVO; una programación vencida se ve aplicada aunque el timer no haya pasado
+         ${ESTADO_EFECTIVO}                                    AS estado,
          u.usuario_fecha_de_creacion                             AS creado,
          u.usuario_fecha_ultima_conexion                         AS ultima_conexion,
          u.usuario_desactivacion_programada                      AS desactivacion_programada,
@@ -27,23 +62,17 @@ async function listar(req, res) {
          CONCAT_WS(' ',
            u.usuario_nombre_completo_primer_nombre_usuario,
            u.usuario_nombre_completo_primer_apellido_usuario)    AS nombre_completo,
-         CASE
-           WHEN u.usuario_es_gerencia THEN 'gerencia'
-           WHEN u.usuario_es_jop      THEN 'jop'
-           ELSE 'otro'
-         END AS rol
+         ${ROL_EFECTIVO} AS rol
        FROM usuario u
        WHERE ($1::text IS NULL OR
               u.usuario_username ILIKE '%' || $1 || '%' OR
               u.usuario_correo   ILIKE '%' || $1 || '%' OR
               CONCAT(u.usuario_nombre_completo_primer_nombre_usuario, ' ',
                      u.usuario_nombre_completo_primer_apellido_usuario) ILIKE '%' || $1 || '%')
-         AND ($2::text IS NULL OR
-              ($2 = 'gerencia' AND u.usuario_es_gerencia = TRUE) OR
-              ($2 = 'jop'      AND u.usuario_es_jop = TRUE))
-         AND ($3::text IS NULL OR u.usuario_estado_cuenta ILIKE $3 OR u.usuario_estado_cuenta ILIKE $3 || 'a')
+         AND ($2::text IS NULL OR ${ROL_EFECTIVO} = $2)
+         AND ($3::text IS NULL OR ${ESTADO_EFECTIVO} = $3)
        ORDER BY u.usuario_nombre_completo_primer_apellido_usuario`,
-      [buscar || null, rol || null, estado || null]
+      [buscar || null, rol || null, estado ? normalizarEstado(estado) : null]
     );
     res.json(rows);
   } catch (err) {
@@ -65,8 +94,13 @@ async function crear(req, res) {
   if (!username || !password || !rol) {
     return res.status(400).json({ error: 'Username, contraseña y rol son requeridos' });
   }
+  if (!ROLES.includes(rol)) return res.status(400).json(ERROR_ROL);
   if (password.length < 8) {
     return res.status(400).json({ error: 'La contraseña debe tener al menos 8 caracteres' });
+  }
+  const estadoCuenta = estado ? normalizarEstado(estado) : 'activo';
+  if (!ESTADOS_CUENTA.includes(estadoCuenta)) {
+    return res.status(400).json({ error: 'El estado de la cuenta debe ser activo o inactivo' });
   }
 
   try {
@@ -93,14 +127,16 @@ async function crear(req, res) {
            usuario_nombre_completo_primer_nombre_usuario,
            usuario_nombre_completo_primer_apellido_usuario,
            usuario_estado_cuenta,
-           usuario_es_gerencia, usuario_es_jop
-         ) VALUES ($1,$2,$3,$4,$5,$6,$7)
+           usuario_es_gerencia, usuario_es_jop, usuario_es_tecnico,
+           usuario_es_administrador, usuario_es_secretaria
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
          RETURNING usuario_id_usuario AS id`,
         [
           username, correo || null,
           nombre || null, apellido || null,
-          estado || 'activa',
-          rol === 'gerencia', rol === 'jop'
+          estadoCuenta,
+          rol === 'gerencia', rol === 'jop', rol === 'tecnico',
+          rol === 'administrador', rol === 'secretaria'
         ]
       );
 
@@ -129,12 +165,66 @@ async function crear(req, res) {
  * PUT /api/usuarios/:id/permisos
  * Editar rol y estado de un usuario — solo gerencia (FR-61)
  */
+/* ── B-03: OT abiertas de un usuario ──────────────────────────────────── */
+
+/** Cuántas OT abiertas tiene como responsable. */
+async function otPendientesDe(id, ejecutar = query) {
+  const { rows } = await ejecutar(
+    `SELECT COUNT(*)::int AS n FROM orden_trabajo
+     WHERE usuario_id_usuario = $1 AND orden_trabajo_estado NOT IN (${SQL_ESTADOS_OT_CERRADA})`, [id]);
+  return rows[0].n;
+}
+
+/** El 400 que bloquea desactivar; `codigo` le permite a la pantalla ofrecer "Reasignar a…". */
+const errorOTPendientes = (n) => ({
+  error: `El usuario tiene ${n} orden(es) de trabajo pendientes. Reasígnelas antes de desactivar.`,
+  codigo: 'OT_PENDIENTES', pendientes: n,
+});
+
+/**
+ * POST /api/usuarios/:id/reasignar-ot   (solo gerencia) — B-03
+ * Body: { responsable_id }. Mueve TODAS las OT abiertas del usuario :id al nuevo responsable,
+ * en una transacción. Las OT cerradas no se tocan (conservan quién las llevó).
+ */
+async function reasignarOT(req, res) {
+  const { id } = req.params;
+  const destino = req.body?.responsable_id;
+  if (!/^\d+$/.test(String(id))) return res.status(400).json({ error: 'El id del usuario debe ser numérico' });
+  if (String(destino) === String(id)) {
+    return res.status(400).json({ error: 'Elija a otro usuario como responsable.', campo: 'responsable_id' });
+  }
+  try {
+    const r = await conTransaccion(async (client) => {
+      const { rows: origen } = await client.query(
+        `SELECT usuario_username AS username FROM usuario WHERE usuario_id_usuario = $1`, [id]);
+      if (!origen.length) throw new ErrorNegocio(404, { error: 'Usuario no encontrado' });
+      const username = await validarResponsable(client, destino);
+      const { rows: movidas } = await client.query(
+        `UPDATE orden_trabajo SET usuario_id_usuario = $2
+         WHERE usuario_id_usuario = $1 AND orden_trabajo_estado NOT IN (${SQL_ESTADOS_OT_CERRADA})
+         RETURNING orden_trabajo_id_orden AS id`, [id, destino]);
+      return { de: origen[0].username, a: username, ots: movidas.map(m => Number(m.id)).sort((x, y) => x - y) };
+    });
+    if (r.ots.length) {
+      await audLog.registrar(req.user.id, 'reasignar_ot', `${r.ots.length} OT de ${r.de} a ${r.a}: #${r.ots.join(', #')}`);
+    }
+    res.json({ message: `${r.ots.length} OT reasignada(s) de ${r.de} a ${r.a}.`, reasignadas: r.ots });
+  } catch (err) {
+    responderError(res, err, 'Error reasignando las OT:');
+  }
+}
+
 async function editarPermisos(req, res) {
   const { id }    = req.params;
-  const { rol, estado } = req.body;
+  const { rol } = req.body;
+  const estado = req.body.estado ? normalizarEstado(req.body.estado) : null;
 
   if (!rol && !estado) {
     return res.status(400).json({ error: 'Debes enviar al menos rol o estado' });
+  }
+  if (rol && !ROLES.includes(rol)) return res.status(400).json(ERROR_ROL);
+  if (estado && !ESTADOS_CUENTA.includes(estado)) {
+    return res.status(400).json({ error: 'El estado de la cuenta debe ser activo o inactivo' });
   }
 
   try {
@@ -159,19 +249,10 @@ async function editarPermisos(req, res) {
       }
     }
 
-    // CU-83 Exc: verificar OTs pendientes antes de desactivar
+    // CU-83 Exc: verificar OTs pendientes antes de desactivar (B-03: la pantalla ofrece reasignarlas)
     if (estado && ['inactivo', 'inactiva'].includes(estado.toLowerCase())) {
-      const { rows: ots } = await query(
-        `SELECT COUNT(*) AS pendientes FROM orden_trabajo
-         WHERE usuario_id_usuario = $1
-           AND orden_trabajo_estado NOT IN ('cancelada','finalizada','completada','cerrada')`,
-        [id]
-      );
-      if (parseInt(ots[0]?.pendientes || 0) > 0) {
-        return res.status(400).json({
-          error: `El usuario tiene ${ots[0].pendientes} orden(es) de trabajo pendientes. Reasígnelas antes de desactivar.`
-        });
-      }
+      const pendientes = await otPendientesDe(id);
+      if (pendientes > 0) return res.status(400).json(errorOTPendientes(pendientes));
     }
 
     // CU-82 Exc / CU-89 CP3: verificar cuenta inactiva antes de cambiar rol
@@ -185,14 +266,20 @@ async function editarPermisos(req, res) {
       }
     }
 
+    // Sin rol se conserva el que tiene (antes caia en 'jop' y degradaba a un gerente
+    // sin pasar por la regla del ultimo gerente de arriba). B-19: con rol, queda UNA sola marca;
+    // antes solo se tocaban gerencia y jop, y un técnico pasado a jop seguía siendo técnico.
     const { rowCount } = await query(
       `UPDATE usuario SET
-         usuario_es_gerencia  = CASE WHEN $1 = 'gerencia' THEN TRUE  ELSE FALSE END,
-         usuario_es_jop       = CASE WHEN $1 = 'jop'      THEN TRUE  ELSE FALSE END,
+         usuario_es_gerencia      = CASE WHEN $1::text IS NULL THEN usuario_es_gerencia      ELSE $1 = 'gerencia'      END,
+         usuario_es_jop           = CASE WHEN $1::text IS NULL THEN usuario_es_jop           ELSE $1 = 'jop'           END,
+         usuario_es_tecnico       = CASE WHEN $1::text IS NULL THEN usuario_es_tecnico       ELSE $1 = 'tecnico'       END,
+         usuario_es_administrador = CASE WHEN $1::text IS NULL THEN usuario_es_administrador ELSE $1 = 'administrador' END,
+         usuario_es_secretaria    = CASE WHEN $1::text IS NULL THEN usuario_es_secretaria    ELSE $1 = 'secretaria'    END,
          usuario_estado_cuenta = COALESCE($2, usuario_estado_cuenta),
          usuario_fecha_de_ultima_edicion = now()
        WHERE usuario_id_usuario = $3`,
-      [rol || 'jop', estado || null, id]
+      [rol || null, estado || null, id]
     );
 
     if (rowCount === 0) {
@@ -235,7 +322,7 @@ async function recuperarPassword(req, res) {
 
     // En producción aquí iría el envío de email con enlace de recuperación.
     // Por ahora generamos una contraseña temporal y la devolvemos.
-    const tempPassword = Math.random().toString(36).slice(-10);
+    const tempPassword = crypto.randomBytes(9).toString('base64url'); // B-02: generador seguro, 12 caracteres
     const hash = await bcrypt.hash(tempPassword, 12);
 
     await query(
@@ -293,7 +380,8 @@ async function auditoria(req, res) {
            CONCAT(
              tm.movimiento_inventario_tipo_movimiento_nombre, ' — SKU ',
              mi.material_sku, ', cantidad: ', mi.movimiento_inventario_cantidad
-           )                                     AS detalle
+           )                                     AS detalle,
+           NULL::varchar                         AS ip
          FROM movimiento_inventario mi
          JOIN usuario u ON u.usuario_id_usuario = mi.usuario_id_usuario
          JOIN movimiento_inventario_tipo_movimiento tm
@@ -308,7 +396,8 @@ async function auditoria(req, res) {
            COALESCE(u2.usuario_username, 'Sistema') AS usuario,
            u2.usuario_rut_usuario           AS rut,
            split_part(r.reporte_tipo_reporte, ':', 2) AS accion,
-           split_part(r.reporte_tipo_reporte, ':', 3) AS detalle
+           split_part(r.reporte_tipo_reporte, ':', 3) AS detalle,
+           NULL::varchar                    AS ip
          FROM reporte r
          LEFT JOIN usuario u2 ON u2.usuario_id_usuario = r.usuario_id_usuario
          WHERE r.reporte_tipo_reporte LIKE 'auditoria:%'
@@ -325,7 +414,8 @@ async function auditoria(req, res) {
            ea.accion_realizada              AS accion,
            -- D59: el detalle largo de Inventario va completo en observacion
            CASE WHEN ea.entidad_afectada = 'inventario' AND ea.observacion IS NOT NULL
-                THEN ea.observacion ELSE ea.registro_afectado END AS detalle
+                THEN ea.observacion ELSE ea.registro_afectado END AS detalle,
+           ea.ip_origen                     AS ip      -- B-20: solo los eventos de seguridad la traen
          FROM finanzas.evento_auditoria ea
          LEFT JOIN usuario u3 ON u3.usuario_id_usuario = ea.id_usuario
          WHERE ($1::text IS NULL OR $1::text = '' OR ea.fecha_hora >= $1::date)
@@ -367,6 +457,10 @@ async function programarDesactivacion(req, res) {
     if (parseInt(id) === parseInt(req.user.id)) {
       return res.status(400).json({ error: 'No puede programar la desactivación de su propia cuenta' });
     }
+
+    // B-03: el mismo control que la desactivación inmediata (antes se saltaba)
+    const pendientes = await otPendientesDe(id);
+    if (pendientes > 0) return res.status(400).json(errorOTPendientes(pendientes));
 
     // OPUS-8: la programacion vive en la tabla usuario, no dentro del mensaje de
     // una notificacion. Antes el dato solo existia como JSON en notificacion, no se
@@ -488,58 +582,68 @@ async function cancelarProgramacion(req, res) {
 }
 
 /**
- * POST /api/usuarios/procesar-programaciones
- * Aplica las programaciones vencidas. Se llama desde el dashboard al cargar.
+ * Aplica las programaciones de activación y desactivación vencidas: notifica a gerencia y audita
+ * como el sistema (D59). B-04: la llama un timer del backend cada minuto (index.js); antes solo
+ * corría cuando un gerente abría el Dashboard.
  *
  * OPUS-8: lee las columnas de `usuario` en vez de parsear JSON de notificaciones.
  * El middleware de auth aplica la desactivacion al usuario afectado en su proximo
  * request; esto cubre a los usuarios que NO estan conectados.
  */
+async function aplicarProgramaciones() {
+  const { rows: desactivados } = await query(
+    `UPDATE usuario
+     SET usuario_estado_cuenta = 'inactivo',
+         usuario_desactivacion_programada = NULL,
+         usuario_fecha_de_ultima_edicion = now()
+     WHERE usuario_desactivacion_programada IS NOT NULL
+       AND usuario_desactivacion_programada <= now()
+     RETURNING usuario_id_usuario AS id, usuario_username AS username`
+  );
+
+  const { rows: activados } = await query(
+    `UPDATE usuario
+     SET usuario_estado_cuenta = 'activo',
+         usuario_activacion_programada = NULL,
+         usuario_fecha_de_ultima_edicion = now()
+     WHERE usuario_activacion_programada IS NOT NULL
+       AND usuario_activacion_programada <= now()
+     RETURNING usuario_id_usuario AS id, usuario_username AS username`
+  );
+
+  for (const u of [...desactivados, ...activados]) {
+    const esDesactivacion = desactivados.some(d => d.id === u.id);
+    const accionTexto = esDesactivacion ? 'desactivada' : 'activada';
+    try {
+      const { notificarPorRol } = require('./notificacionesController');
+      await notificarPorRol({
+        tipo: 'programacion_ejecutada',
+        mensaje: `La cuenta de ${u.username} ha sido ${accionTexto} automáticamente según la programación establecida.`,
+        origen: 'usuarios',
+        ruta: '/usuarios',
+        rol: 'gerencia'
+      });
+    } catch (e) { console.warn('No se pudo notificar programación ejecutada:', e.message); }
+
+    // D59: la ejecución es automática; la hace el sistema
+    await audLog.registrar(audLog.USUARIO_SISTEMA, 'programacion_ejecutada',
+      `Usuario ${u.username} (ID ${u.id}) ${esDesactivacion ? 'desactivado' : 'activado'} automáticamente`);
+  }
+
+  return {
+    procesadas: desactivados.length + activados.length,
+    desactivados: desactivados.map(u => u.username),
+    activados: activados.map(u => u.username)
+  };
+}
+
+/**
+ * POST /api/usuarios/procesar-programaciones
+ * Aplica ahora las programaciones vencidas (lo mismo que hace el timer cada minuto).
+ */
 async function procesarProgramaciones(req, res) {
   try {
-    const { rows: desactivados } = await query(
-      `UPDATE usuario
-       SET usuario_estado_cuenta = 'inactivo',
-           usuario_desactivacion_programada = NULL,
-           usuario_fecha_de_ultima_edicion = now()
-       WHERE usuario_desactivacion_programada IS NOT NULL
-         AND usuario_desactivacion_programada <= now()
-       RETURNING usuario_id_usuario AS id, usuario_username AS username`
-    );
-
-    const { rows: activados } = await query(
-      `UPDATE usuario
-       SET usuario_estado_cuenta = 'activo',
-           usuario_activacion_programada = NULL,
-           usuario_fecha_de_ultima_edicion = now()
-       WHERE usuario_activacion_programada IS NOT NULL
-         AND usuario_activacion_programada <= now()
-       RETURNING usuario_id_usuario AS id, usuario_username AS username`
-    );
-
-    for (const u of [...desactivados, ...activados]) {
-      const esDesactivacion = desactivados.some(d => d.id === u.id);
-      const accionTexto = esDesactivacion ? 'desactivada' : 'activada';
-      try {
-        const { notificarPorRol } = require('./notificacionesController');
-        await notificarPorRol({
-          tipo: 'programacion_ejecutada',
-          mensaje: `La cuenta de ${u.username} ha sido ${accionTexto} automáticamente según la programación establecida.`,
-          origen: 'usuarios',
-          rol: 'gerencia'
-        });
-      } catch (e) { console.warn('No se pudo notificar programación ejecutada:', e.message); }
-
-      // D59: la ejecución es automática; quien abrió el dashboard solo la disparó
-      await audLog.registrar(audLog.USUARIO_SISTEMA, 'programacion_ejecutada',
-        `Usuario ${u.username} (ID ${u.id}) ${esDesactivacion ? 'desactivado' : 'activado'} automáticamente`);
-    }
-
-    res.json({
-      procesadas: desactivados.length + activados.length,
-      desactivados: desactivados.map(u => u.username),
-      activados: activados.map(u => u.username)
-    });
+    res.json(await aplicarProgramaciones());
   } catch (err) {
     console.error('Error procesando programaciones:', err);
     res.status(500).json({ error: 'Error interno del servidor' });
@@ -576,6 +680,7 @@ async function deteccionExtraccionMasiva(req, res, next) {
         tipo: 'extraccion_masiva',
         mensaje: `Alerta de seguridad: El usuario ID ${userId} ha realizado ${rows[0].total} exportaciones en los últimos 5 minutos.`,
         origen: 'seguridad',
+        ruta: '/usuarios?tab=auditoria',
         rol: 'gerencia'
       });
 
@@ -594,7 +699,7 @@ async function deteccionExtraccionMasiva(req, res, next) {
 }
 
 module.exports = {
-  listar, crear, editarPermisos, recuperarPassword, auditoria,
-  programarDesactivacion, cancelarProgramacion, programarActivacion, procesarProgramaciones,
+  listar, crear, editarPermisos, recuperarPassword, auditoria, reasignarOT,
+  programarDesactivacion, cancelarProgramacion, programarActivacion, procesarProgramaciones, aplicarProgramaciones,
   deteccionExtraccionMasiva
 };

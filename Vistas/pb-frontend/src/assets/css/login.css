@@ -25,12 +25,15 @@ body.login-page #root { width: 100%; display: flex; align-items: center; justify
   letter-spacing: -0.5px;
 }
 
+/* F-07 (#24): logo del cliente */
+.login-logo-img { display: block; height: 56px; width: auto; max-width: 100%; margin-bottom: 22px; }
+
 .login-title { font-size: 24px; font-weight: 700; margin-bottom: 4px; }
 .login-sub   { font-size: 13px; color: var(--gray); margin-bottom: 28px; }
 
 .forgot-link {
   font-size: 13px;
-  color: var(--orange);
+  color: var(--orange-text); /* F-25a: contraste 4,5:1 */
   font-weight: 500;
   cursor: pointer;
   float: right;
@@ -38,7 +41,7 @@ body.login-page #root { width: 100%; display: flex; align-items: center; justify
   margin-bottom: 20px;
   display: block;
 }
-.forgot-link:hover { color: var(--orange-dark); }
+.forgot-link:hover { text-decoration: underline; }
 
 .login-submit {
   width: 100%;

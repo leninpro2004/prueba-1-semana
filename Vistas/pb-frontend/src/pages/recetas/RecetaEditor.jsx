@@ -16,10 +16,15 @@ import SelectorProducto from '../../components/SelectorProducto';
  *  - Exc 2: si ya existe, se edita o se DUPLICA como nueva versión conservando la anterior.
  *  - Edición: 24 h libre para gerencia y jop; después solo gerencia, con motivo.
  * La merma se ingresa en % y se guarda como fracción (20 % → 0,2).
+ * F-08 (D74): una línea puede llevar una fórmula "por medidas" (vacía = cantidad fija). La cantidad
+ * sigue siendo obligatoria: es la referencia de una puerta estándar para los cálculos desde la venta.
  */
 
 let siguienteClave = 1;
-const filaVacia = () => ({ clave: siguienteClave++, sku: '', cantidad: '', mermaPct: '', areaId: '' });
+const filaVacia = () => ({ clave: siguienteClave++, sku: '', cantidad: '', mermaPct: '', areaId: '', formula: '' });
+// F-08: medidas que acepta una fórmula (las define src/config/medidas.js del backend), en mm
+const VARIABLES_FORMULA = 'vano_ancho, vano_alto, hojas, mdf (1 o 0), perfil_marco, marco_ancho, marco_alto, ' +
+  'alojamiento_ancho, alojamiento_alto, hoja_ancho, hoja_alto, bastidor_ancho, bastidor_alto (hoja y bastidor: por hoja)';
 const fechaHora = (v) => (v ? new Date(v).toLocaleString('es-CL', { dateStyle: 'short', timeStyle: 'short' }) : '—');
 
 export default function RecetaEditor() {
@@ -47,6 +52,7 @@ export default function RecetaEditor() {
   const [errores, setErrores] = useState({});        // `${indice}:${campo}` -> mensaje
   const [guardando, setGuardando] = useState(false);
   const [duplicando, setDuplicando] = useState(false);
+  const [pruebas, setPruebas] = useState({});        // F-08: clave de fila -> { formula, ejemplo } o { formula, error }
 
   // Catálogos: materiales activos y áreas activas de producción o instalación (CU-120, D44)
   useEffect(() => {
@@ -68,11 +74,14 @@ export default function RecetaEditor() {
     setTipo(r.producto.tipo || '');
     setOriginales(Object.fromEntries(r.materiales.map(m => [m.sku, { nombre: m.nombre, unidad: m.unidad, estado: m.estado_material,
       // Sesión 15: valores guardados, para dejar pasar un material inactivo que no se tocó
-      cantidad: parseFloat(m.cantidad_base), merma: parseFloat(m.merma), areaId: m.area_id ? String(m.area_id) : '' }])));
+      cantidad: parseFloat(m.cantidad_base), merma: parseFloat(m.merma), areaId: m.area_id ? String(m.area_id) : '',
+      formula: m.formula || '' }])));
     setFilas(r.materiales.length ? r.materiales.map(m => ({
       clave: siguienteClave++, sku: m.sku, cantidad: String(parseFloat(m.cantidad_base)),
       mermaPct: String(Math.round(parseFloat(m.merma) * 10000) / 100), areaId: m.area_id ? String(m.area_id) : '',
+      formula: m.formula || '',
     })) : [filaVacia()]);
+    setPruebas({});
     setErrores({});
   };
 
@@ -111,7 +120,20 @@ export default function RecetaEditor() {
     if (!o) return false;
     const c = parseFloat(String(f.cantidad).replace(',', '.'));
     const m = f.mermaPct === '' ? 0 : parseFloat(String(f.mermaPct).replace(',', '.')) / 100;
-    return Math.abs(c - o.cantidad) < 1e-9 && Math.abs(m - o.merma) < 1e-6 && f.areaId === o.areaId;
+    return Math.abs(c - o.cantidad) < 1e-9 && Math.abs(m - o.merma) < 1e-6 && f.areaId === o.areaId
+      && f.formula.trim() === o.formula;
+  };
+
+  /** F-08: prueba la fórmula de la fila con la puerta de ejemplo (al salir del campo). */
+  const probar = async (f) => {
+    const formula = f.formula.trim();
+    if (!formula || pruebas[f.clave]?.formula === formula) return;
+    try {
+      const r = await API.recetas.probarFormula(formula);
+      setPruebas(p => ({ ...p, [f.clave]: { formula, ejemplo: r.ejemplo } }));
+    } catch (e) {
+      setPruebas(p => ({ ...p, [f.clave]: { formula, error: e.message } }));
+    }
   };
 
   /** Validación en la vista (el backend vuelve a validar todo). */
@@ -146,6 +168,7 @@ export default function RecetaEditor() {
         cantidad_base: parseFloat(String(f.cantidad).replace(',', '.')),
         merma: f.mermaPct === '' ? 0 : parseFloat(String(f.mermaPct).replace(',', '.')) / 100,
         area_id: f.areaId || null,
+        formula: f.formula.trim() || null,
       })),
     };
 
@@ -271,6 +294,12 @@ export default function RecetaEditor() {
           El <strong>área</strong> (obligatoria) indica dónde se consume el insumo: cada orden de trabajo carga solo los insumos de su área,
           y los del área <strong>Instalación</strong> se vinculan al pedido de instalación de la venta.
         </div>
+        <div style={{ fontSize: 12, color: 'var(--gray)', marginBottom: 12 }}>
+          <strong>Por medidas</strong> (opcional): una fórmula calcula la cantidad por puerta con las medidas de la orden de trabajo,
+          en milímetros. Ej: <code>(2 * marco_alto + marco_ancho) / 1000</code> metros de perfil. Medidas: {VARIABLES_FORMULA}.
+          Funciones: <code>redondear_arriba(x)</code>, <code>max(a, b)</code>, <code>min(a, b)</code>; decimales con punto.
+          Si queda vacía se usa la cantidad fija; si tiene fórmula, la cantidad queda como referencia de una puerta estándar.
+        </div>
         <div className="table-wrap">
           <table>
             <thead>
@@ -280,6 +309,7 @@ export default function RecetaEditor() {
                 <th style={{ width: 90 }}>Unidad</th>
                 <th style={{ width: 100 }}>Merma %</th>
                 <th style={{ width: 170 }}>Área</th>
+                <th style={{ minWidth: 220 }}>Por medidas</th>
                 {!soloLectura && <th style={{ width: 40 }} />}
               </tr>
             </thead>
@@ -323,6 +353,19 @@ export default function RecetaEditor() {
                       </select>
                       {err(i, 'area_id') && <div style={{ fontSize: 11, color: 'var(--danger)' }}>{err(i, 'area_id')}</div>}
                     </td>
+                    <td>
+                      <input className="form-control" value={f.formula} disabled={soloLectura} placeholder="Vacío = cantidad fija"
+                        aria-label={`Fórmula de la fila ${i + 1}`} maxLength={500} style={{ fontFamily: 'monospace', ...estiloError(i, 'formula') }}
+                        onChange={e => cambiar(i, 'formula', e.target.value)} onBlur={() => probar(f)} />
+                      {err(i, 'formula') && <div style={{ fontSize: 11, color: 'var(--danger)' }}>{err(i, 'formula')}</div>}
+                      {f.formula.trim() && pruebas[f.clave]?.formula === f.formula.trim() && (
+                        pruebas[f.clave].error
+                          ? <div style={{ fontSize: 11, color: 'var(--danger)' }}>{pruebas[f.clave].error}</div>
+                          : <div style={{ fontSize: 11, color: 'var(--gray)' }}>
+                              Vano 1000 × 2100: {formatQty(pruebas[f.clave].ejemplo)} {mat?.unidad_medida || mat?.unidad || ''} por puerta
+                            </div>
+                      )}
+                    </td>
                     {!soloLectura && (
                       <td><button className="btn btn-ghost btn-sm" title="Quitar insumo" onClick={() => quitar(i)}>✕</button></td>
                     )}
@@ -343,6 +386,7 @@ export default function RecetaEditor() {
         {filas.some(f => f.cantidad) && (
           <div style={{ fontSize: 12, color: 'var(--gray)', marginTop: 10 }}>
             Cantidad con merma por puerta: {filas.filter(f => f.sku && f.cantidad).map(f => {
+              if (f.formula.trim()) return `${f.sku} por medidas`;
               const c = parseFloat(String(f.cantidad).replace(',', '.')) || 0;
               const m = parseFloat(String(f.mermaPct || 0).replace(',', '.')) || 0;
               return `${f.sku} ${formatQty(c * (1 + m / 100))}`;

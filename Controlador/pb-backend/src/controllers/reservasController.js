@@ -451,4 +451,5 @@ async function reservarVenta(req, res) {
   }
 }
 
-module.exports = { listar, liberar, anular, ventasReservables, vistaReservaVenta, reservarVenta };
+module.exports = { listar, liberar, anular, ventasReservables, vistaReservaVenta, reservarVenta,
+                   cerrarReserva };   // F-28: anular una OT libera sus reservas

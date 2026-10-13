@@ -2,6 +2,7 @@ const express = require('express');
 const router  = express.Router();
 const ctrl    = require('../controllers/pedidosVentaController');
 const { authMiddleware, soloGerencia } = require('../middleware/auth');
+const { requiereFirma } = require('../middleware/firma');
 
 // Pedidos de instalación (CU-120 → 119): actores Gerencia y JOP (los dos CU)
 function soloGerenciaOJop(req, res, next) {
@@ -24,7 +25,7 @@ router.post('/:id/retiro/:sku/ubicacion', ctrl.reportarUbicacion);  // CU-126 Ex
 router.post('/:id/carga',                 ctrl.iniciarCarga);       // CU-125
 router.put('/:id/salida',                 ctrl.confirmarSalida);    // CU-127
 router.put('/:id/devolucion/:sku',        ctrl.devolverABodega);    // D51: lo retirado vuelve al anaquel
-router.put('/:id/deshacer-preparado', soloGerencia, ctrl.deshacerPreparado);   // D51
-router.put('/:id/cancelar',           soloGerencia, ctrl.cancelarPedido);      // D51: venta cancelada
+router.put('/:id/deshacer-preparado', soloGerencia, requiereFirma('pedido_cancelar'), ctrl.deshacerPreparado);   // D51
+router.put('/:id/cancelar',           soloGerencia, requiereFirma('pedido_cancelar'), ctrl.cancelarPedido);      // D51: venta cancelada
 
 module.exports = router;

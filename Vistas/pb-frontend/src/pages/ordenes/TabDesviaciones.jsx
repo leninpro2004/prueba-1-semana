@@ -1,12 +1,16 @@
 import { useEffect, useState } from 'react';
 import { API } from '../../services/api';
-import { formatMoney, formatQty } from '../../utils/format';
+import Alert, { AvisoCerrable } from '../../components/Alert';
+import { formatMoneySigno, formatQty } from '../../utils/format';
+import NombreCorto from '../../components/NombreCorto';   // F-17
 
 /**
  * CU-103: diferenciales de consumo de una OT finalizada.
  * Desviación = real − estimado; % = ÷ estimado × 100. Sin estimado → "Sin base de
  * comparación" (Exc 2). Planificados sin consumo registrado se listan aparte: no son
  * ahorro. El impacto en CLP solo llega a quien puede ver montos (el backend lo quita a jop).
+ * F-07 (#20): el backend manda el impacto positivo = gasto de más; en pantalla la pérdida va
+ * NEGATIVA y en rojo, y el ahorro sin signo y en verde (por eso se muestra -impacto).
  */
 
 const TIPOS = {
@@ -18,6 +22,8 @@ const TIPOS = {
 
 const pct = (v) => (v == null ? '—' : (v > 0 ? '+' : '') + v.toLocaleString('es-CL', { maximumFractionDigits: 2 }) + '%');
 const conSigno = (v) => (v > 0 ? '+' : '') + formatQty(v);
+/** Color de un impacto tal como lo manda el backend (positivo = gasto de más). */
+const colorImpacto = (v) => (v > 0 ? 'var(--danger)' : v < 0 ? 'var(--success)' : undefined);
 
 export default function TabDesviaciones({ otId, estado, puedeProcesar }) {
   const [datos, setDatos] = useState(null);
@@ -79,18 +85,18 @@ export default function TabDesviaciones({ otId, estado, puedeProcesar }) {
         )}
       </div>
 
-      {error && <div className="alert alert-danger" style={{ marginBottom: 16 }}>{error}</div>}
-      {mensaje && <div className="alert alert-success" style={{ marginBottom: 16 }}>{mensaje}</div>}
+      <Alert type="danger" message={error} style={{ marginBottom: 16 }} onClose={() => setError('')} />
+      <Alert type="success" message={mensaje} style={{ marginBottom: 16 }} onClose={() => setMensaje('')} />
 
       {r && r.items > 0 && (
         <div className="kpi-grid" style={{ marginBottom: 16 }}>
           <div className="kpi-card kpi-danger"><div className="kpi-label">Sobre gasto</div><div className="kpi-value danger">{r.sobre_gasto}</div>
-            <div className="kpi-sub">{verMontos ? formatMoney(r.impacto_sobre_gasto_clp) + ' (incluye sin base)' : 'ítem(s)'}</div></div>
+            <div className="kpi-sub">{verMontos ? <><span style={{ color: colorImpacto(r.impacto_sobre_gasto_clp) }}>{formatMoneySigno(-r.impacto_sobre_gasto_clp)}</span> (incluye sin base)</> : 'ítem(s)'}</div></div>
           <div className="kpi-card kpi-success"><div className="kpi-label">Ahorro</div><div className="kpi-value" style={{ color: 'var(--success)' }}>{r.ahorro}</div>
-            <div className="kpi-sub">{verMontos ? formatMoney(r.impacto_ahorro_clp) : 'ítem(s)'}</div></div>
+            <div className="kpi-sub">{verMontos ? <span style={{ color: colorImpacto(r.impacto_ahorro_clp) }}>{formatMoneySigno(-r.impacto_ahorro_clp)}</span> : 'ítem(s)'}</div></div>
           <div className="kpi-card"><div className="kpi-label">Sin desviación</div><div className="kpi-value">{r.sin_desviacion}</div><div className="kpi-sub">ítem(s)</div></div>
           <div className="kpi-card kpi-warning"><div className="kpi-label">Sin base</div><div className="kpi-value warning">{r.sin_base}</div><div className="kpi-sub">No estaban planificados</div></div>
-          {verMontos && <div className="kpi-card"><div className="kpi-label">Impacto neto</div><div className="kpi-value" style={{ fontSize: 20 }}>{formatMoney(r.impacto_neto_clp)}</div><div className="kpi-sub">Positivo = gasto de más</div></div>}
+          {verMontos && <div className="kpi-card"><div className="kpi-label">Impacto neto</div><div className="kpi-value" style={{ fontSize: 20, color: colorImpacto(r.impacto_neto_clp) }}>{formatMoneySigno(-r.impacto_neto_clp)}</div><div className="kpi-sub">Negativo = gasto de más</div></div>}
         </div>
       )}
 
@@ -109,13 +115,14 @@ export default function TabDesviaciones({ otId, estado, puedeProcesar }) {
               <tbody>
                 {datos.items.map(i => (
                   <tr key={i.sku}>
-                    <td><div style={{ fontWeight: 500, fontSize: 13 }}>{i.nombre}</div><div style={{ fontSize: 11, color: '#aaa' }}>{i.sku} · {i.unidad || ''}</div></td>
+                    <td><div style={{ fontWeight: 500, fontSize: 13 }}><NombreCorto texto={i.nombre} /></div><div style={{ fontSize: 11, color: '#aaa' }}>{i.sku} · {i.unidad || ''}</div></td>
                     <td style={{ textAlign: 'right' }}>{i.tipo === 'sin_base' ? '—' : formatQty(i.estimado)}</td>
                     <td style={{ textAlign: 'right' }}>{formatQty(i.real)}</td>
                     <td style={{ textAlign: 'right', fontWeight: 600 }}>{conSigno(i.desviacion_abs)}</td>
                     <td style={{ textAlign: 'right' }}>{pct(i.desviacion_pct)}</td>
                     <td><span className={'badge ' + TIPOS[i.tipo].badge}>{TIPOS[i.tipo].etiqueta}</span></td>
-                    {verMontos && <td style={{ textAlign: 'right' }}>{i.impacto_clp == null ? <span style={{ color: 'var(--gray)' }}>Sin precio</span> : formatMoney(i.impacto_clp)}</td>}
+                    {verMontos && <td style={{ textAlign: 'right' }}>{i.impacto_clp == null ? <span style={{ color: 'var(--gray)' }}>Sin precio</span>
+                      : <span style={{ color: colorImpacto(i.impacto_clp) }}>{formatMoneySigno(-i.impacto_clp)}</span>}</td>}
                   </tr>
                 ))}
               </tbody>
@@ -125,11 +132,11 @@ export default function TabDesviaciones({ otId, estado, puedeProcesar }) {
       )}
 
       {datos?.sin_consumo_registrado?.length > 0 && (
-        <div className="alert alert-warning" style={{ fontSize: 13 }}>
+        <AvisoCerrable className="alert alert-warning" style={{ fontSize: 13 }}>
           <strong>Planificados sin consumo registrado</strong> (no se cuentan como ahorro):{' '}
           {datos.sin_consumo_registrado.map(s => `${s.sku} (estimado ${formatQty(s.estimado)})`).join(', ')}.
           Si sí se consumieron, registre el consumo real y reprocese.
-        </div>
+        </AvisoCerrable>
       )}
     </div>
   );

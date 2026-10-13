@@ -2,6 +2,7 @@ const express = require('express');
 const router  = express.Router();
 const ctrl    = require('../controllers/herramientasController');
 const { authMiddleware, soloGerencia, soloOperativo } = require('../middleware/auth');
+const { requiereFirma } = require('../middleware/firma');
 
 router.use(authMiddleware);
 
@@ -18,11 +19,11 @@ router.put('/asignaciones/:id/devolver',  soloOperativo, ctrl.devolverAsignacion
 router.get('/', ctrl.listar);
 
 // Marcar/desmarcar herramienta y cargar su valor de adquisicion
-router.put('/:sku', soloGerencia, ctrl.actualizar);
+router.put('/:sku', soloGerencia, requiereFirma('depreciacion'), ctrl.actualizar);
 
 // OPUS-13: depreciacion, asignaciones y mantenimiento
 router.get('/:sku/depreciacion',  ctrl.calcularDepreciacion);
-router.put('/:sku/depreciacion',  soloGerencia, ctrl.configurarDepreciacion);
+router.put('/:sku/depreciacion',  soloGerencia, requiereFirma('depreciacion'), ctrl.configurarDepreciacion);
 router.post('/:sku/asignar',      soloOperativo, ctrl.asignar);          // D62
 router.post('/:sku/mantenimiento', soloOperativo, ctrl.registrarMantenimiento);   // D62
 

@@ -18,8 +18,10 @@ const MAX_CORTO = 100;   // registro_afectado y accion_realizada son VARCHAR(100
  * @param {number|null} usuarioId — null o undefined = acción del sistema
  * @param {string} accion   — ej: 'crear_material', 'editar_usuario', 'registrar_entrada'
  * @param {string} detalle  — descripción del registro afectado
+ * @param {{ ip?: string }} [opciones] — B-20: IP de origen, solo en los eventos de seguridad
+ *   (login, contraseñas, firmas). Detrás de nginx exige TRUST_PROXY=1 (src/index.js).
  */
-async function registrar(usuarioId, accion, detalle) {
+async function registrar(usuarioId, accion, detalle, { ip } = {}) {
   const texto = detalle == null ? null : String(detalle);
   const largo = texto != null && texto.length > MAX_CORTO;
   try {
@@ -29,10 +31,12 @@ async function registrar(usuarioId, accion, detalle) {
          accion_realizada,
          entidad_afectada,
          registro_afectado,
-         observacion
-       ) VALUES ($1, $2, $3, $4, $5)`,
+         observacion,
+         ip_origen
+       ) VALUES ($1, $2, $3, $4, $5, $6)`,
       [usuarioId ?? USUARIO_SISTEMA, String(accion).slice(0, MAX_CORTO), 'inventario',
-       largo ? texto.slice(0, MAX_CORTO - 1) + '…' : texto, largo ? texto : null]
+       largo ? texto.slice(0, MAX_CORTO - 1) + '…' : texto, largo ? texto : null,
+       ip ? String(ip).slice(0, 45) : null]
     );
   } catch (err) {
     // La auditoría no debe romper el flujo principal

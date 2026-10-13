@@ -150,13 +150,7 @@ async function obtener(req, res) {
     const venta = await cabecera({ query }, id);
     if (!venta) return res.status(404).json({ error: 'Venta no encontrada' });
 
-    const { rows: items } = await query(
-      `SELECT i.id_item_nota_venta AS id, i.descripcion_item AS descripcion, i.cantidad::float AS cantidad,
-              i.requiere_instalacion, i.sku_material AS sku, pt.producto_terminado_codigo_producto AS receta
-       FROM finanzas.item_nota_venta i
-       LEFT JOIN producto_terminado pt ON pt.producto_terminado_id_producto = i.id_producto_terminado
-       WHERE i.id_nota_venta = $1 ORDER BY i.id_item_nota_venta`, [id]
-    );
+    const items = await itemsDeVenta({ query }, id);
     const sugeridos = await sugerencia({ query }, id);
 
     let detalle = [];
@@ -239,7 +233,7 @@ async function obtener(req, res) {
 }
 
 /** Reserva hasta `cantidad` de un SKU en una bodega, por FIFO, una reserva por lote. Devuelve lo reservado. */
-async function reservarEnBodega(client, { detId, ventaId, sku, bodegaId, cantidad }) {
+async function reservarEnBodega(client, { detId, ventaId, sku, bodegaId, cantidad, usuarioId }) {
   const { rows: lotes } = await client.query(
     `SELECT ib.lote_id_lote,
             ib.inventario_bodega_cantidad_fisica - ib.inventario_bodega_cantidad_reservada AS disponible
@@ -270,9 +264,10 @@ async function reservarEnBodega(client, { detId, ventaId, sku, bodegaId, cantida
     if (rowCount === 0) {
       await client.query(
         `INSERT INTO reserva_inventario (reserva_inventario_cantidad_reservada, reserva_inventario_estado_reserva,
-           material_sku, nota_venta_id_nota_venta, lote_id_lote, bodega_id_bodega, preparacion_pedido_detalle_id)
-         VALUES ($1, 'activa', $2, $3, $4, $5, $6)`,
-        [r, sku, ventaId, l.lote_id_lote, bodegaId, detId]
+           material_sku, nota_venta_id_nota_venta, lote_id_lote, bodega_id_bodega, preparacion_pedido_detalle_id,
+           usuario_id_usuario)
+         VALUES ($1, 'activa', $2, $3, $4, $5, $6, $7)`,
+        [r, sku, ventaId, l.lote_id_lote, bodegaId, detId, usuarioId]
       );
     }
     restante -= r;
@@ -285,8 +280,8 @@ async function reservarEnBodega(client, { detId, ventaId, sku, bodegaId, cantida
  * alcanza se completa desde las demás bodegas activas, la de más disponible primero.
  * Devuelve lo reservado.
  */
-async function reservarConReparto(client, { detId, ventaId, sku, bodegaId, cantidad }) {
-  let reservado = await reservarEnBodega(client, { detId, ventaId, sku, bodegaId, cantidad });
+async function reservarConReparto(client, { detId, ventaId, sku, bodegaId, cantidad, usuarioId }) {
+  let reservado = await reservarEnBodega(client, { detId, ventaId, sku, bodegaId, cantidad, usuarioId });
   if (cantidad - reservado <= 1e-9) return reservado;
   const { rows: otras } = await client.query(
     `SELECT ib.bodega_id_bodega AS id
@@ -299,7 +294,7 @@ async function reservarConReparto(client, { detId, ventaId, sku, bodegaId, canti
   );
   for (const o of otras) {
     if (cantidad - reservado <= 1e-9) break;
-    reservado += await reservarEnBodega(client, { detId, ventaId, sku, bodegaId: o.id, cantidad: cantidad - reservado });
+    reservado += await reservarEnBodega(client, { detId, ventaId, sku, bodegaId: o.id, cantidad: cantidad - reservado, usuarioId });
   }
   return reservado;
 }
@@ -502,6 +497,7 @@ async function vincular(req, res) {
       for (const l of porAjustar.filter(x => x.reservado < x.cantidad - 1e-9)) {
         l.reservado += await reservarConReparto(client, {
           detId: l.detId, ventaId: id, sku: l.sku, bodegaId: l.bodegaId, cantidad: l.cantidad - l.reservado,
+          usuarioId: req.user.id,
         });
       }
       for (const l of porAjustar) {
@@ -631,6 +627,8 @@ async function marcarPreparado(req, res) {
 }
 
 const r4 = (x) => Math.round(x * 10000) / 10000;
+/** Cantidad para un texto que se muestra tal cual (trazabilidad): coma decimal, como formatQty en la vista. */
+const cantTexto = (x) => r4(x).toLocaleString('es-CL', { maximumFractionDigits: 4 });
 
 /** Bloquea el pedido (FOR UPDATE) y lee su estado de despacho vigente, ya con el bloqueo. */
 async function bloquearYLeerEstado(client, prepId) {
@@ -799,6 +797,7 @@ async function registrarRetiro(req, res) {
     if (r.alertaId) {
       await notificarPorRol({
         tipo: 'faltante_retiro', origen: 'pedidos_instalacion', alertaId: r.alertaId, rol: 'gerencia',
+        ruta: `/instalacion/${r.venta.id}`,
         mensaje: `Retiro parcial en la venta ${r.venta.numero}: faltan ${r.faltante} de ${r.item.nombre} en ${r.item.bodega}.`,
       });
     }
@@ -853,6 +852,7 @@ async function reportarUbicacion(req, res) {
     await auditoria.registrar(req.user.id, 'Ubicación incorrecta (picking)', `${r.venta.numero}: ${sku}, alerta #${r.alertaId}`);
     await notificarPorRol({
       tipo: 'ubicacion_incorrecta', origen: 'pedidos_instalacion', alertaId: r.alertaId, rol: 'gerencia',
+      ruta: `/alertas?detalle=${r.alertaId}`,
       mensaje: `Venta ${r.venta.numero}: ${r.item.nombre} no está en la ubicación indicada en ${r.item.bodega}. Revise el panel de alertas.`,
     });
     res.status(201).json({
@@ -1482,20 +1482,20 @@ async function lineaDeTiempo(db, venta, skuFiltro = null) {
       .sort((a, b) => (a !== i.bodega) - (b !== i.bodega));
     const bodegas = deLotes.length ? deLotes : [i.bodega];
     return {
-      sku: i.sku, nombre: i.nombre, unidad: i.unidad, requerida: i.requerida,
+      sku: i.sku, nombre: i.nombre, unidad: i.unidad, requerida: i.requerida, bodegas,
       etapas: [
         etapa('ingreso', susLotes.length ? 'completada' : 'pendiente', ingresos[0] ?? null,
           susLotes.length
-            ? susLotes.map(l => `Lote ${l.lote || '—'} (${r4(l.cantidad)})${bodegas.length > 1 ? ` · ${l.bodega}` : ''}`).join(', ')
+            ? susLotes.map(l => `Lote ${l.lote || '—'} (${cantTexto(l.cantidad)})${bodegas.length > 1 ? ` · ${l.bodega}` : ''}`).join(', ')
             : 'Sin lotes reservados'),
         etapa('bodega', 'completada', null, enumerar(bodegas)),
         etapa('vinculacion', 'completada', i.fecha_vinculacion, i.vinculado_por ? `Vinculado por ${i.vinculado_por}` : null),
         etapa('preparacion', hecho(primero.preparado), primero.preparado?.fecha ?? null,
           primero.preparado ? `Por ${primero.preparado.usuario || '—'}` : null),
         retiroCompleto
-          ? etapa('retiro', 'completada', i.fecha_retiro, `Retirado ${r4(i.retirada)} por ${i.retirado_por || '—'}`)
+          ? etapa('retiro', 'completada', i.fecha_retiro, `Retirado ${cantTexto(i.retirada)} por ${i.retirado_por || '—'}`)
           : i.retirada > 0
-            ? etapa('retiro', 'parcial', i.fecha_retiro, `Parcial: ${r4(i.retirada)} de ${i.requerida}`)
+            ? etapa('retiro', 'parcial', i.fecha_retiro, `Parcial: ${cantTexto(i.retirada)} de ${cantTexto(i.requerida)}`)
             : etapa('retiro', 'pendiente'),
         etapa('carga', hecho(primero.en_carga), primero.en_carga?.fecha ?? null,
           primero.en_carga ? `Responsable(s): ${responsables.map(x => x.nombre).join(', ')}` : null),
@@ -1510,34 +1510,144 @@ const resumenVenta = (v) => ({ id: Number(v.id), numero: v.numero, cliente: v.cl
                                estado_despacho: v.estado_despacho || 'sin_vincular' });
 
 /**
+ * F-12: avance del pedido. Cada insumo está en su primera etapa no completada; el pedido, en la del insumo menos
+ * avanzado. El % son las etapas completadas sobre el total (7 por insumo); una etapa parcial no suma.
+ */
+function resumenAvance(venta, insumos) {
+  const posicion = (i) => { const k = i.etapas.findIndex(e => e.estado !== 'completada'); return k === -1 ? ETAPAS.length : k; };
+  const completadas = insumos.reduce((s, i) => s + i.etapas.filter(e => e.estado === 'completada').length, 0);
+  const minimo = Math.min(...insumos.map(posicion));
+  const enCurso = minimo < ETAPAS.length ? insumos.find(i => posicion(i) === minimo).etapas[minimo] : null;
+  const etapa = venta.estado_despacho === 'cancelado' ? { clave: 'cancelado', titulo: 'Cancelado', estado: 'pendiente' }
+    : enCurso || { clave: 'despachado', titulo: 'Despachado', estado: 'completada' };
+  return {
+    etapa: etapa.clave, etapa_titulo: etapa.titulo, etapa_estado: etapa.estado,
+    porcentaje: Math.round((completadas * 100) / (insumos.length * ETAPAS.length)),
+    insumos: insumos.length, insumos_completos: insumos.filter(i => posicion(i) === ETAPAS.length).length,
+    etapas: etapasDelPedido(insumos),
+  };
+}
+
+// Etapas con el mismo dato para todos los insumos del pedido (quién vinculó, preparó, cargó o despachó)
+const ETAPAS_DEL_PEDIDO = new Set(['vinculacion', 'preparacion', 'carga', 'despacho']);
+
+/**
+ * F-12: la línea de tiempo del pedido completo, en vez de una por insumo. Una etapa está completada si todos los
+ * insumos la cumplen (fecha = la del último en cumplirla), parcial si la cumplen algunos, pendiente si ninguno.
+ * Ingreso y retiro dicen cuántos insumos la cumplen y cuáles faltan (hasta 3 nombres).
+ */
+function etapasDelPedido(insumos) {
+  const n = insumos.length;
+  const ultima = (a, b) => (new Date(a) >= new Date(b) ? a : b);
+  return ETAPAS.map(([clave, titulo], k) => {
+    const de = insumos.map(i => ({ nombre: i.nombre, e: i.etapas[k] }));
+    const hechas = de.filter(x => x.e.estado === 'completada');
+    const estado = hechas.length === n ? 'completada'
+      : hechas.length || de.some(x => x.e.estado === 'parcial') ? 'parcial' : 'pendiente';
+    const fechas = hechas.map(x => x.e.fecha).filter(Boolean);
+    let detalle = null;
+    if (clave === 'bodega') {
+      detalle = enumerar([...new Set(insumos.flatMap(i => i.bodegas))]);
+    } else if (ETAPAS_DEL_PEDIDO.has(clave)) {
+      detalle = hechas[0]?.e.detalle ?? null;
+    } else if (estado !== 'pendiente') {
+      const faltan = de.filter(x => x.e.estado !== 'completada').map(x => x.nombre + (x.e.estado === 'parcial' ? ' (parcial)' : ''));
+      detalle = `${hechas.length} de ${n} insumos`
+        + (!faltan.length ? '' : `. Faltan: ${faltan.length > 3 ? `${faltan.slice(0, 3).join(', ')} y ${faltan.length - 3} más` : enumerar(faltan)}`);
+    }
+    return { clave, titulo, estado, fecha: fechas.length ? fechas.reduce(ultima) : null, detalle };
+  });
+}
+
+/** Ítems de la venta con sus medidas (F-12), sin precios. Los usan el detalle del pedido y la trazabilidad. */
+async function itemsDeVenta(db, id) {
+  const { rows } = await db.query(
+    `SELECT i.id_item_nota_venta AS id, i.descripcion_item AS descripcion, i.cantidad::float AS cantidad,
+            i.requiere_instalacion, i.sku_material AS sku, pt.producto_terminado_codigo_producto AS receta,
+            i.alto::float AS alto, i.ancho::float AS ancho, i.espesor::float AS espesor, i.observacion
+     FROM finanzas.item_nota_venta i
+     LEFT JOIN producto_terminado pt ON pt.producto_terminado_id_producto = i.id_producto_terminado
+     WHERE i.id_nota_venta = $1 ORDER BY i.id_item_nota_venta`, [id]
+  );
+  return rows;
+}
+
+/**
+ * Un pedido para la trazabilidad: la venta, lo pedido, el avance (null si no tiene insumos vinculados) y la línea de
+ * tiempo de sus insumos (solo `skuFiltro` si se busca por SKU; el avance es siempre el del pedido completo).
+ */
+async function pedidoTrazable(db, ventaId, skuFiltro = null) {
+  const venta = await cabecera(db, ventaId);
+  if (!venta) return null;
+  const todos = venta.preparacion_id ? await lineaDeTiempo(db, venta) : [];
+  return {
+    venta: resumenVenta(venta),
+    resumen: todos.length ? resumenAvance(venta, todos) : null,
+    items: await itemsDeVenta(db, ventaId),
+    insumos: skuFiltro ? todos.filter(i => i.sku === skuFiltro) : todos,
+  };
+}
+
+const MAX_PEDIDOS_BUSQUEDA = 50;
+/** Minúsculas y sin tildes (la columna se compara con translate(lower(...)) con las mismas letras). */
+const sinTildes = (s) => s.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+const SIN_TILDES_SQL = (col) => `translate(lower(${col}), 'áéíóúüñ', 'aeiouun')`;
+
+/**
  * GET /api/pedidos-venta/trazabilidad?q=   (gerencia y jop) — CU-121, solo lectura
- * `q` = número de venta (exacto, sin distinguir mayúsculas) o, si no hay venta con ese número, un SKU.
- *   Venta → la línea de tiempo de cada insumo de su pedido de instalación.
- *   SKU   → un bloque por pedido de instalación que incluye ese insumo, con su línea de tiempo.
- *   Exc 2: ni venta ni SKU → 404.   Exc 1: existe pero sin vinculación → 200 con sin_datos.
+ * `q` = número de venta (exacto, sin distinguir mayúsculas); si no hay venta con ese número, un SKU; si tampoco,
+ * el nombre del cliente o parte del número de venta (sin distinguir mayúsculas ni tildes, F-12).
+ *   Venta   → su pedido de instalación.
+ *   SKU     → cada pedido de instalación que incluye ese insumo, con solo su línea de tiempo.
+ *   Cliente → sus ventas vinculables o vinculadas (como la lista de pedidos), las sin vincular con resumen null.
+ * Cada pedido trae `resumen` (etapa y % del pedido completo), `items` (lo pedido, con medidas) e `insumos`.
+ *   Exc 2: nada coincide → 404.   Exc 1: venta o SKU que existe pero sin vinculación → 200 con sin_datos.
  */
 async function trazabilidad(req, res) {
   const q = String(req.query.q ?? '').trim();
-  if (!q) return res.status(400).json({ error: 'Ingrese el número de venta o el SKU a consultar.' });
+  if (!q) return res.status(400).json({ error: 'Ingrese el número de venta, el SKU o el cliente a consultar.' });
   try {
     const { rows: nv } = await query(
       `SELECT id_nota_venta AS id FROM finanzas.nota_venta WHERE LOWER(numero_nota_venta) = LOWER($1) ORDER BY 1 LIMIT 1`, [q]);
     if (nv.length) {
-      const venta = await cabecera({ query }, nv[0].id);
-      const insumos = venta.preparacion_id ? await lineaDeTiempo({ query }, venta) : [];
+      const pedido = await pedidoTrazable({ query }, nv[0].id);
+      const conDatos = pedido.insumos.length > 0;
       return res.json({
         tipo: 'venta', consulta: q,
-        pedidos: insumos.length ? [{ venta: resumenVenta(venta), insumos }] : [],
-        sin_datos: insumos.length === 0,
-        mensaje: insumos.length ? null
-          : `La venta ${venta.numero} existe, pero no registra movimientos todavía: no tiene insumos vinculados, así que no hay datos de trazabilidad.`,
+        pedidos: conDatos ? [pedido] : [],
+        sin_datos: !conDatos,
+        mensaje: conDatos ? null
+          : `La venta ${pedido.venta.numero} existe, pero no registra movimientos todavía: no tiene insumos vinculados, así que no hay datos de trazabilidad.`,
       });
     }
 
     const { rows: mat } = await query(
       `SELECT material_sku AS sku, material_nombre_material AS nombre FROM material WHERE UPPER(material_sku) = UPPER($1)`, [q]);
     if (!mat.length) {
-      return res.status(404).json({ error: `No se encontró ninguna venta ni SKU "${q}". Verifique el dato ingresado.` });
+      // F-12: por cliente o parte del número; las mismas ventas que la lista de pedidos de instalación
+      const patron = '%' + sinTildes(q).replace(/[\\%_]/g, c => '\\' + c) + '%';
+      const { rows: ventas } = await query(
+        `SELECT nv.id_nota_venta AS id
+         FROM finanzas.nota_venta nv
+         LEFT JOIN finanzas.cliente_financiero cf ON cf.id_cliente_financiero = nv.id_cliente_financiero
+         LEFT JOIN preparacion_pedido pp ON pp.nota_venta_id_nota_venta = nv.id_nota_venta
+         WHERE (nv.estado_pedido = ANY($2) OR pp.preparacion_pedido_id_preparacion IS NOT NULL)
+           AND (${SIN_TILDES_SQL('cf.nombre_razon_social')} LIKE $1 OR ${SIN_TILDES_SQL('nv.numero_nota_venta')} LIKE $1)
+         ORDER BY (pp.preparacion_pedido_id_preparacion IS NULL), nv.fecha_max_entrega NULLS LAST, nv.numero_nota_venta
+         LIMIT $3`, [patron, ESTADOS_VINCULABLES, MAX_PEDIDOS_BUSQUEDA + 1]);
+      if (!ventas.length) {
+        return res.status(404).json({ error: `No se encontró ninguna venta, SKU ni cliente "${q}". Verifique el dato ingresado.` });
+      }
+      const pedidos = [];
+      for (const v of ventas.slice(0, MAX_PEDIDOS_BUSQUEDA)) {
+        const p = await pedidoTrazable({ query }, v.id);
+        if (p) pedidos.push(p);
+      }
+      return res.json({
+        tipo: 'busqueda', consulta: q, pedidos, sin_datos: false,
+        mensaje: ventas.length > MAX_PEDIDOS_BUSQUEDA
+          ? `Se muestran los primeros ${MAX_PEDIDOS_BUSQUEDA} pedidos. Escriba más del nombre o el número para acotar la búsqueda.` : null,
+      });
     }
     const { rows: preps } = await query(
       `SELECT DISTINCT pp.nota_venta_id_nota_venta AS venta_id, pp.preparacion_pedido_fecha_creacion AS fecha
@@ -1547,9 +1657,8 @@ async function trazabilidad(req, res) {
        ORDER BY pp.preparacion_pedido_fecha_creacion DESC`, [mat[0].sku]);
     const pedidos = [];
     for (const p of preps) {
-      const venta = await cabecera({ query }, p.venta_id);
-      if (!venta) continue;
-      pedidos.push({ venta: resumenVenta(venta), insumos: await lineaDeTiempo({ query }, venta, mat[0].sku) });
+      const pedido = await pedidoTrazable({ query }, p.venta_id, mat[0].sku);
+      if (pedido) pedidos.push(pedido);
     }
     res.json({
       tipo: 'sku', consulta: q, material: mat[0], pedidos,

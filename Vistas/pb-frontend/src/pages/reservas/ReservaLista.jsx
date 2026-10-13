@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { API } from '../../services/api';
 import { formatQty } from '../../utils/format';
 import { usePageTitle } from '../../contexts/TitleContext';
 import Alert, { useAlert } from '../../components/Alert';
 import { useAuth } from '../../hooks/useAuth';
+import { usePagination } from '../../hooks/usePagination';
+import Pagination from '../../components/Pagination';
 
 /**
  * Reservas de Stock — conversión 1:1 de reservas/lista.html.
@@ -65,16 +67,18 @@ export default function ReservaLista() {
   /* `cumplida` lo calcula el backend: reserva activa cuyo consumo real en la OT ya
      alcanzo lo apartado. Es stock retenido sin motivo. */
   const todas = reservas || [];
-  const cumplidas = todas.filter(r => r.cumplida);
+  // B-10: memorizado para que la paginación no vuelva a la página 1 en cada render
+  const cumplidas = useMemo(() => (reservas || []).filter(r => r.cumplida), [reservas]);
   const unidadesRetenidas = cumplidas.reduce((a, r) => a + parseFloat(r.cantidad || 0), 0);
   const visibles = soloCumplidas ? cumplidas : todas;
+  const pag = usePagination(reservas === null ? null : visibles, 20);
 
   return (
     <>
       <div className="page-header">
         <div>
           <div className="page-title">Reservas de Stock</div>
-          <div className="page-subtitle">Gestión y liberación de reservas vinculadas a pedidos</div>
+          <div className="page-subtitle">Gestión y liberación de reservas de órdenes de trabajo y ventas</div>
         </div>
         {/* CU-131: reservar material suelto de una venta aprobada (gerencia y jop) */}
         {['gerencia', 'jop'].includes(user?.rol) && (
@@ -173,7 +177,7 @@ export default function ReservaLista() {
                     : 'No hay reservas con esos filtros. Pruebe cambiando el estado, la venta o la búsqueda.'}
                 </td></tr>
               )}
-              {reservas !== null && visibles.map(r => {
+              {reservas !== null && pag.items.map(r => {
                 const esActiva = r.estado === 'activa';
                 const badgeClass = r.estado === 'activa' ? 'badge-warning'
                                  : r.estado === 'liberada' ? 'badge-success'
@@ -245,6 +249,7 @@ export default function ReservaLista() {
             </tbody>
           </table>
         </div>
+        <Pagination {...pag} />
       </div>
 
       {/* Modal confirmación */}

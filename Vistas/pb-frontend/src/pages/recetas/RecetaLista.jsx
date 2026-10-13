@@ -1,11 +1,12 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { API } from '../../services/api';
 import { useAuth } from '../../hooks/useAuth';
 import { useConfirm } from '../../hooks/useDialog';
 import { usePageTitle } from '../../contexts/TitleContext';
 import Alert, { useAlert } from '../../components/Alert';
-import { EmptyRow } from '../../components/Pagination';
+import Pagination, { EmptyRow } from '../../components/Pagination';
+import { usePagination } from '../../hooks/usePagination';
 import DuplicarReceta from './DuplicarReceta';
 
 /**
@@ -15,6 +16,8 @@ import DuplicarReceta from './DuplicarReceta';
  */
 
 const ddmmaaaa = (v) => (v ? new Date(v).toLocaleDateString('es-CL') : '—');
+// B-09: buscar sin importar tildes ni mayúsculas
+const normalizar = (t) => String(t ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
 
 export default function RecetaLista() {
   usePageTitle('Recetas');
@@ -25,7 +28,9 @@ export default function RecetaLista() {
   const puedeEditar = ['gerencia', 'jop'].includes(user?.rol);
 
   const [recetas, setRecetas] = useState(null);
-  const [verInactivas, setVerInactivas] = useState(false);
+  const [estado, setEstado] = useState('activas');      // B-09: activas · inactivas · todas
+  const [buscar, setBuscar] = useState('');
+  const verInactivas = estado !== 'activas';
   const [duplicando, setDuplicando] = useState(null);   // receta que se está duplicando
   const [recarga, setRecarga] = useState(0);            // se incrementa para volver a consultar
   const cargar = () => setRecarga(n => n + 1);
@@ -60,7 +65,15 @@ export default function RecetaLista() {
     }
   };
 
-  const lista = recetas || [];
+  // B-09: filtro de estado y búsqueda en el navegador (la lista llega completa)
+  const lista = useMemo(() => {
+    const q = normalizar(buscar.trim());
+    return (recetas || []).filter(r =>
+      (estado !== 'inactivas' || !r.activo) &&
+      (!q || [r.codigo, r.nombre, r.tipo].some(v => normalizar(v).includes(q))));
+  }, [recetas, estado, buscar]);
+  const pag = usePagination(lista, 20);
+  const hayFiltros = buscar.trim() !== '' || estado !== 'activas';
 
   return (
     <>
@@ -79,14 +92,18 @@ export default function RecetaLista() {
 
       <Alert {...alert} />
 
-      <div className="card card-sm" style={{ marginBottom: 16 }}>
-        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer' }}>
-          <input type="checkbox" checked={verInactivas} onChange={e => setVerInactivas(e.target.checked)} />
-          Ver también las recetas inactivas (reemplazadas o que ya no se venden)
-        </label>
-      </div>
-
       <div className="card">
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
+          <input className="form-control" id="buscar-receta" style={{ maxWidth: 320 }} placeholder="Buscar por código, nombre o tipo…"
+            value={buscar} onChange={e => setBuscar(e.target.value)} />
+          <select className="form-control" id="filtro-estado-receta" style={{ width: 'auto' }} value={estado} onChange={e => setEstado(e.target.value)}
+            title="Las inactivas son las reemplazadas por otra versión o las que ya no se venden">
+            <option value="activas">Activas</option>
+            <option value="inactivas">Inactivas (reemplazadas o que ya no se venden)</option>
+            <option value="todas">Todas</option>
+          </select>
+          {hayFiltros && <button type="button" className="btn btn-ghost btn-sm" onClick={() => { setBuscar(''); setEstado('activas'); }}>Limpiar filtros</button>}
+        </div>
         <div className="table-wrap">
           <table>
             <thead>
@@ -99,9 +116,11 @@ export default function RecetaLista() {
             <tbody>
               {recetas === null && <tr><td colSpan={7} style={{ textAlign: 'center', padding: 32 }}>Cargando…</td></tr>}
               {recetas !== null && lista.length === 0 && (
-                <EmptyRow colSpan={7} emptyMsg={puedeEditar ? 'No hay recetas. Cree la primera con "Nueva receta".' : 'No hay recetas registradas.'} />
+                <EmptyRow colSpan={7} emptyMsg={
+                  recetas.length > 0 || hayFiltros ? 'Ninguna receta coincide con la búsqueda.'
+                    : puedeEditar ? 'No hay recetas. Cree la primera con "Nueva receta".' : 'No hay recetas registradas.'} />
               )}
-              {lista.map(r => (
+              {pag.items.map(r => (
                 <tr key={r.id} style={r.activo ? undefined : { opacity: 0.7 }}>
                   <td><span className="td-mono">{r.codigo || '—'}</span></td>
                   <td><Link to={`/recetas/${r.id}`} style={{ fontWeight: 500 }}>{r.nombre}</Link></td>
@@ -131,6 +150,7 @@ export default function RecetaLista() {
             </tbody>
           </table>
         </div>
+        <Pagination {...pag} />
       </div>
 
       {duplicando && (

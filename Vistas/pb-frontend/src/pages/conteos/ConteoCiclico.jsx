@@ -227,7 +227,7 @@ export default function ConteoCiclico() {
       <div className="page-header">
         <div>
           <div className="page-title">Nuevo conteo cíclico</div>
-          <div className="page-subtitle">Conteo físico por bodega, sin ver el stock del sistema (CU-37)</div>
+          <div className="page-subtitle">Conteo físico por bodega, sin ver el stock del sistema</div>
         </div>
         <Link to="/conteos" className="btn btn-secondary">← Volver a conteos</Link>
       </div>

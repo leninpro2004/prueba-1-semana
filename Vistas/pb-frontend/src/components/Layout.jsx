@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import { Outlet } from 'react-router-dom';
 import Sidebar from './Sidebar';
+import SidebarAgrupado from './SidebarAgrupado';
+import { useVista } from '../utils/paleta';
 import Topbar from './Topbar';
 import ChangePasswordModal from './ChangePasswordModal';
 import { TitleProvider } from '../contexts/TitleContext';
@@ -16,6 +18,8 @@ export default function Layout() {
   const { user, updateUser } = useAuth();
   const { warning, extend } = useSessionTimer();
   useAccountStatus(); // OPUS-8: cierra la sesión si desactivan la cuenta
+  // F-25a' (D82, N-14): menú agrupado por dominio con "Vista: Nueva"
+  const Menu = useVista() === 'nueva' ? SidebarAgrupado : Sidebar;
 
   const [mobileOpen, setMobileOpen] = useState(false);
   const [apodoOpen, setApodoOpen] = useState(false);
@@ -23,14 +27,15 @@ export default function Layout() {
   const [passOpen, setPassOpen] = useState(false);
 
   const openApodo = () => {
-    setApodo(user?.username || user?.nombre || '');
+    setApodo(user?.apodo || user?.username || user?.nombre || '');
     setApodoOpen(true);
   };
 
   const confirmApodo = () => {
     const val = apodo.trim();
     if (!val) return;
-    updateUser({ username: val });
+    // B-05: el apodo va aparte y se guarda en el navegador; ya no pisa el username
+    updateUser({ apodo: val });
     setApodoOpen(false);
   };
 
@@ -52,7 +57,7 @@ export default function Layout() {
       )}
 
       <div className="layout">
-        <Sidebar mobileOpen={mobileOpen} onOpenApodo={openApodo} onOpenPass={() => setPassOpen(true)} />
+        <Menu mobileOpen={mobileOpen} onOpenApodo={openApodo} onOpenPass={() => setPassOpen(true)} />
         <div
           className={'sidebar-overlay' + (mobileOpen ? ' show' : '')}
           id="sidebar-overlay"

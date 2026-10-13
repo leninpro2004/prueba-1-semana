@@ -10,7 +10,7 @@ import Pagination, { EmptyRow } from '../../components/Pagination';
 import BotonExportar from '../../components/BotonExportar';
 import { usePagination } from '../../hooks/usePagination';
 import SelectorProducto from '../../components/SelectorProducto';
-import { ocultaMontos } from '../../utils/user';
+import ReportesNav from '../../components/ReportesNav';
 
 // Fechas LOCALES en formato AAAA-MM-DD. toISOString() da la fecha en UTC: entre las
 // 21:00 y las 24:00 de Chile devolvia el dia siguiente.
@@ -149,19 +149,13 @@ export default function ReporteMovimientos() {
 
   return (
     <>
+      <ReportesNav />
       <div className="page-header">
         <div>
           <div className="page-title">Reporte de Movimientos</div>
           <div className="page-subtitle">Auditoría de entradas, salidas y traslados por período</div>
         </div>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          <Link to="/reportes/mermas" className="btn btn-ghost">Mermas</Link>
-          {!ocultaMontos(user) && <Link to="/reportes/valorizacion" className="btn btn-ghost">Valorización</Link>}
-          <Link to="/reportes/consumo-area" className="btn btn-ghost">Consumo por área</Link>
-          <Link to="/reportes/programacion" className="btn btn-ghost">Programación semanal</Link>
-          {['gerencia', 'jop'].includes(user?.rol) && <Link to="/reportes/rotacion" className="btn btn-ghost">Rotación</Link>}
-          {esGerencia && <Link to="/reportes/historico" className="btn btn-ghost">Histórico</Link>}
-          {['gerencia', 'jop'].includes(user?.rol) && <Link to="/reportes/desviaciones" className="btn btn-ghost">Desviaciones</Link>}
           {user?.rol !== 'jop' && (
             <BotonExportar id="btn-exportar" onClick={exportar} filas={movs == null ? null : lista.length} />
           )}

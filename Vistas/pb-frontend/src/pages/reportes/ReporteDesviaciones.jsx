@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { API } from '../../services/api';
-import { formatQty, formatMoney } from '../../utils/format';
+import { formatQty, formatMoneySigno } from '../../utils/format';
 import { exportarCSV } from '../../utils/csvExport';
 import { exportarPDF } from '../../utils/pdfExport';
 import { usePageTitle } from '../../contexts/TitleContext';
@@ -9,6 +9,7 @@ import Alert, { useAlert } from '../../components/Alert';
 import Pagination from '../../components/Pagination';
 import BotonExportar from '../../components/BotonExportar';
 import { usePagination } from '../../hooks/usePagination';
+import ReportesNav from '../../components/ReportesNav';
 
 /**
  * CU-104 — Ranking de desviaciones críticas por impacto (gerencia y jop).
@@ -89,7 +90,8 @@ export default function ReporteDesviaciones() {
       rows: ranking.map(i => [
         i.posicion, i.ot_id, i.ot_fecha, i.area, i.sku, i.nombre, i.unidad || '',
         i.estimado, i.real, i.desviacion_abs, formatPct(i.desviacion_pct), TIPOS[i.tipo].etiqueta,
-        ...(conMontos ? [i.sin_precio ? 'Sin precio' : i.impacto_clp] : []),
+        // F-07 (#20): la pérdida va negativa, igual que en pantalla
+        ...(conMontos ? [i.sin_precio ? 'Sin precio' : -i.impacto_clp] : []),
       ]),
     };
   };
@@ -110,7 +112,7 @@ export default function ReporteDesviaciones() {
         resumen: [
           ['Ítems con pérdida', String(r.items ?? 0)], ['Órdenes de trabajo', String(r.ots ?? 0)],
           ['Sobregasto', String(r.sobre_gasto ?? 0)], ['No planificado', String(r.sin_base ?? 0)],
-          ...(conMontos ? [['Impacto total', formatMoney(r.impacto_total_clp)]] : []),
+          ...(conMontos ? [['Impacto total', formatMoneySigno(-r.impacto_total_clp)]] : []),
           ['Ahorros (fuera del ranking)', String(r.ahorro ?? 0)],
         ],
         ...tabla(),
@@ -137,13 +139,13 @@ export default function ReporteDesviaciones() {
 
   return (
     <>
+      <ReportesNav />
       <div className="page-header">
         <div>
           <div className="page-title">Desviaciones de consumo</div>
           <div className="page-subtitle">Dónde se producen las mayores mermas o ineficiencias, ordenadas por impacto económico</div>
         </div>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          <Link to="/reportes/movimientos" className="btn btn-ghost">← Reportes</Link>
           <BotonExportar onClick={exportar} filas={filasExportables} />
           <BotonExportar onClick={exportarPdf} cargando={generandoPdf} filas={filasExportables} etiqueta="Exportar PDF" />
         </div>
@@ -199,7 +201,7 @@ export default function ReporteDesviaciones() {
             {kpi('Ítems con pérdida', r.items, `en ${r.ots} OT(s)`, 'var(--danger)')}
             {kpi('Sobregasto', r.sobre_gasto, 'real mayor que lo estimado')}
             {kpi('No planificado', r.sin_base, 'consumido sin estimado')}
-            {conMontos && kpi('Impacto total', formatMoney(r.impacto_total_clp),
+            {conMontos && kpi('Impacto total', formatMoneySigno(-r.impacto_total_clp),
                               r.sin_precio > 0 ? `${r.sin_precio} ítem(s) sin precio no suman` : 'pérdida valorizada', 'var(--danger)')}
             {kpi('Ahorros', r.ahorro, 'fuera del ranking', 'var(--success)')}
           </div>
@@ -240,7 +242,7 @@ export default function ReporteDesviaciones() {
                       {conMontos && (
                         <td style={{ fontWeight: 700 }}>
                           {i.sin_precio ? <span className="badge badge-gray" title="El material no tenía precio a la fecha de la OT">Sin precio</span>
-                                        : formatMoney(i.impacto_clp)}
+                                        : <span style={{ color: 'var(--danger)' }}>{formatMoneySigno(-i.impacto_clp)}</span>}
                         </td>
                       )}
                     </tr>

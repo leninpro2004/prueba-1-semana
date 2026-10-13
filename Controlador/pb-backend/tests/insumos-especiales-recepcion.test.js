@@ -63,9 +63,11 @@ describe('Recepción de un insumo especial (CU-124)', () => {
     assert.equal(await reservadoEn(e.body.lote_id), 5);
     assert.equal(await reservadoEn(5), 0, 'el lote antiguo no se toca');
     assert.deepEqual(await db.descuadresDeReservas(), []);
-    const { rows } = await db.query(`SELECT lote_id_lote::int AS lote, bodega_id_bodega::int AS bodega, nota_venta_id_nota_venta::int AS venta
+    const { rows } = await db.query(`SELECT lote_id_lote::int AS lote, bodega_id_bodega::int AS bodega, nota_venta_id_nota_venta::int AS venta,
+                                            usuario_id_usuario::int AS usuario
                                      FROM inventario.reserva_inventario WHERE material_sku = 'PIN-TEST' ORDER BY venta`);
-    assert.deepEqual(rows, [{ lote: Number(e.body.lote_id), bodega: 1, venta: 1 }, { lote: Number(e.body.lote_id), bodega: 1, venta: 2 }]);
+    assert.deepEqual(rows, [{ lote: Number(e.body.lote_id), bodega: 1, venta: 1, usuario: 1 },
+                            { lote: Number(e.body.lote_id), bodega: 1, venta: 2, usuario: 1 }]);
     assert.equal((await alerta(2)).estado, 'disponible');
     assert.equal((await alerta(1)).estado, 'activa');
     const lista = await api('GET', '/api/alertas-faltantes/insumos-especiales');
@@ -111,7 +113,8 @@ describe('Recepción de un insumo especial (CU-124)', () => {
     assert.deepEqual(r.body.insumo_especial.pendientes, []);
     assert.match(r.body.insumo_especial.mensaje, /stock transitorio/);
     assert.equal(await db.contar('inventario.notificacion',
-      "notificacion_origen = 'movimientos' AND notificacion_tipo_notificacion = 'insumo_especial' AND usuario_id_usuario = 1"), 1);
+      // B-06: el origen ahora guarda la ruta, la misma del aviso de ventas: se distingue por el mensaje
+      "notificacion_mensaje ILIKE '%stock transitorio%' AND notificacion_tipo_notificacion = 'insumo_especial' AND usuario_id_usuario = 1"), 1);
   });
 
   test('la entrada de un material rotativo no trae nada de insumos especiales', async () => {

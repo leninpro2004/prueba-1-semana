@@ -177,6 +177,7 @@ async function revisarVentas(usuarioId = null) {
       tipo: 'insumo_especial',
       mensaje: `Se vendieron ${r.nuevas.length} insumo(s) especial(es) que hay que comprar. Revise Alertas → Faltantes → Insumos especiales.`,
       origen: 'alertas_faltantes',
+      ruta: '/alertas/faltantes?tab=especiales',
       rol: 'gerencia',
     });
   }
@@ -418,6 +419,7 @@ async function alRecibir({ sku, cantidad, movimientoId, loteId, bodegaId }) {
       mensaje: `Se recibieron ${cantidad} de ${rows[0].nombre} (insumo especial) y ninguna venta lo espera: queda en ` +
                'stock transitorio. Indique qué hacer con él.',
       origen: 'movimientos',
+      ruta: '/alertas/faltantes?tab=especiales',
       rol: 'gerencia',
     });
   }
@@ -536,10 +538,10 @@ async function vincular(req, res) {
       for (const d of detalle) {
         const { rows: res_ } = await client.query(
           `INSERT INTO reserva_inventario (reserva_inventario_cantidad_reservada, reserva_inventario_estado_reserva,
-             material_sku, nota_venta_id_nota_venta, lote_id_lote, bodega_id_bodega)
-           VALUES ($1, 'activa', $2, $3, $4, $5)
+             material_sku, nota_venta_id_nota_venta, lote_id_lote, bodega_id_bodega, usuario_id_usuario)
+           VALUES ($1, 'activa', $2, $3, $4, $5, $6)
            RETURNING reserva_inventario_id_reserva AS id`,
-          [d.cantidad, sku, d.al.venta_id, origen.lote_id, origen.bodega_id]
+          [d.cantidad, sku, d.al.venta_id, origen.lote_id, origen.bodega_id, req.user.id]
         );
         const saldo = Math.max(Math.round((d.pendiente - d.cantidad) * 1e4) / 1e4, 0);
         if (saldo === 0) {

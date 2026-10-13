@@ -9,6 +9,9 @@ const { ocultaMontos, quitarCampos } = require('../middleware/auth');
 const { calcularDiferencial } = require('../db/desviaciones');
 const { precioVigente } = require('../db/historico');
 const { generarAlertasAutomaticas } = require('./alertasController');
+const { ESTADOS_VINCULABLES } = require('./pedidosVentaController');   // F-06: ventas aprobadas o en proceso (D44)
+const { cerrarReserva } = require('./reservasController');             // F-28: anular libera las reservas
+const { normalizarMedidas } = require('../config/medidas');               // F-08
 
 /* ======================================================================
    OPUS-1 - Nucleo transaccional de consumos reales
@@ -18,7 +21,7 @@ const { generarAlertasAutomaticas } = require('./alertasController');
    compartidos con pedidosController y reservasController.
    ====================================================================== */
 
-const ESTADOS_OT_CERRADA = ['cancelada', 'finalizada', 'completada', 'cerrada'];
+const { ESTADOS_OT_CERRADA, ESTADO_OT_CANCELADA, SQL_ESTADOS_OT_CERRADA } = require('../db/estadosOT');   // F-28: lista única
 
 /** Carga la OT y valida que exista y este abierta (CU-89 Exc 4). */
 async function cargarOTAbierta(client, id) {
@@ -195,13 +198,18 @@ async function consultarConsumos(req, res) {
     const { rows: ot } = await query(
       `SELECT ot.orden_trabajo_id_orden AS id, ot.orden_trabajo_estado AS estado,
               ot.proyecto_id_proyecto AS proyecto_id,
+              pr.codigo_proyecto AS proyecto_codigo,   -- F-24: la pestaña Consumo avisa si es de prueba
               -- R1: área de la OT y receta cargada
               ot.area_trabajo_id_area AS area_id, a.area_trabajo_nombre_area AS area,
               ot.producto_terminado_id_producto AS receta_id, ot.orden_trabajo_cantidad_puertas AS cantidad_puertas,
-              pt.producto_terminado_codigo_producto AS receta_codigo, pt.producto_terminado_nombre_producto AS receta_nombre
+              pt.producto_terminado_codigo_producto AS receta_codigo, pt.producto_terminado_nombre_producto AS receta_nombre,
+              -- B-03: responsable (se puede cambiar desde el detalle)
+              ot.usuario_id_usuario AS responsable_id, ur.usuario_username AS responsable
        FROM orden_trabajo ot
        LEFT JOIN area_trabajo a ON a.area_trabajo_id_area = ot.area_trabajo_id_area
        LEFT JOIN producto_terminado pt ON pt.producto_terminado_id_producto = ot.producto_terminado_id_producto
+       LEFT JOIN usuario ur ON ur.usuario_id_usuario = ot.usuario_id_usuario
+       LEFT JOIN terreno.proyecto pr ON pr.id_proyecto = ot.proyecto_id_proyecto
        WHERE ot.orden_trabajo_id_orden = $1`,
       [id]
     );
@@ -739,70 +747,94 @@ async function comparativo(req, res) {
   }
 }
 
+/** Fecha local YYYY-MM-DD de hoy (nunca desde toISOString(), que es UTC). */
+function hoyLocal() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+// F-10 (D75): de dónde sale el precio unitario de cada material (precioVigente de db/historico.js)
+const NOTA_PRECIO = {
+  historial:      'Último precio de compra',
+  historial_otro: 'Último precio de compra (otro proveedor)',
+  referencial:    'Precio referencial (sin compras)',
+};
+
+/**
+ * OT (con proyecto y cantidad de puertas) y el costo de sus consumos reales, valorizados al precio
+ * vigente hoy: último precio de compra del proveedor principal, si no el de cualquier proveedor y,
+ * si no hay compras, el precio referencial (D75). null si la OT no existe.
+ */
+async function costoMaterialesOT(id) {
+  const { rows: ot } = await query(
+    `SELECT ot.orden_trabajo_id_orden AS id, ot.orden_trabajo_estado AS estado,
+            ot.orden_trabajo_cantidad_puertas AS puertas,
+            p.codigo_proyecto AS proyecto_codigo, p.nombre_referencia AS proyecto_nombre
+     FROM orden_trabajo ot
+     LEFT JOIN terreno.proyecto p ON p.id_proyecto = ot.proyecto_id_proyecto
+     WHERE ot.orden_trabajo_id_orden = $1`,
+    [id]
+  );
+  if (ot.length === 0) return null;
+
+  const { rows: materiales } = await query(
+    `SELECT
+       mot.material_sku                             AS sku,
+       m.material_nombre_material                   AS nombre,
+       u.material_unidad_medida_nombre              AS unidad,
+       mot.material_orden_trabajo_consumo_real      AS cantidad_real
+     FROM material_orden_trabajo mot
+     JOIN material m ON m.material_sku = mot.material_sku
+     LEFT JOIN material_unidad_medida u
+            ON u.material_unidad_medida_id_unidad_medida = m.material_unidad_medida_id_unidad_medida
+     WHERE mot.orden_trabajo_id_orden = $1
+       AND mot.material_orden_trabajo_consumo_real IS NOT NULL
+     ORDER BY m.material_nombre_material`,
+    [id]
+  );
+
+  const precios = await precioVigente({ query }, hoyLocal());
+  const detalle = materiales.map(m => {
+    const cant = parseFloat(m.cantidad_real || 0);
+    const { precio = null, fuente = null } = precios.get(m.sku) || {};
+    return {
+      ...m,
+      precio_unitario: precio,
+      costo_linea: cant * (precio || 0),
+      fuente_precio: fuente,
+      // CU-93 Exc 1
+      sin_precio: precio == null,
+      // CU-93 Exc 2
+      nota_precio: precio == null ? 'Sin precio: no suma al costo' : NOTA_PRECIO[fuente],
+    };
+  });
+  return { orden: ot[0], detalle, costoTotal: detalle.reduce((s, d) => s + d.costo_linea, 0) };
+}
+
 /**
  * GET /api/ordenes-trabajo/:id/costos
- * Consolidar costos de materiales (CU-93)
+ * Consolidar costos de materiales (CU-93), con el mismo precio que la rentabilidad (F-10).
  */
 async function costos(req, res) {
   const { id } = req.params;
   try {
-    const { rows: ot } = await query(
-      `SELECT ot.orden_trabajo_id_orden AS id, ot.orden_trabajo_estado AS estado,
-              p.codigo_proyecto AS proyecto_codigo, p.nombre_referencia AS proyecto_nombre
-       FROM orden_trabajo ot
-       LEFT JOIN terreno.proyecto p ON p.id_proyecto = ot.proyecto_id_proyecto
-       WHERE ot.orden_trabajo_id_orden = $1`,
-      [id]
-    );
-    if (ot.length === 0) {
+    const r = await costoMaterialesOT(id);
+    if (!r) {
       return res.status(404).json({ error: 'Orden de trabajo no encontrada' });
     }
-
-    const { rows: materiales } = await query(
-      `SELECT
-         mot.material_sku                             AS sku,
-         m.material_nombre_material                   AS nombre,
-         u.material_unidad_medida_nombre              AS unidad,
-         mot.material_orden_trabajo_consumo_real      AS cantidad_real,
-         mp.material_proveedor_precio_referencial     AS precio_unitario
-       FROM material_orden_trabajo mot
-       JOIN material m ON m.material_sku = mot.material_sku
-       LEFT JOIN material_unidad_medida u
-              ON u.material_unidad_medida_id_unidad_medida = m.material_unidad_medida_id_unidad_medida
-       LEFT JOIN material_proveedor mp
-              ON mp.material_sku = mot.material_sku
-             AND mp.material_proveedor_proveedor_principal = TRUE
-       WHERE mot.orden_trabajo_id_orden = $1
-         AND mot.material_orden_trabajo_consumo_real IS NOT NULL
-       ORDER BY m.material_nombre_material`,
-      [id]
-    );
-
-    const detalle = materiales.map(m => {
-      const cant   = parseFloat(m.cantidad_real || 0);
-      const precio = parseFloat(m.precio_unitario || 0);
-      return {
-        ...m,
-        costo_linea: cant * precio,
-        // CU-93 Exc 1
-        sin_precio: !m.precio_unitario,
-        // CU-93 Exc 2
-        nota_precio: m.precio_unitario ? 'Precio vigente proveedor principal' : 'Estimado/Incompleto'
-      };
-    });
-
-    const costoTotal   = detalle.reduce((s, d) => s + d.costo_linea, 0);
-    const incompleto   = detalle.some(d => d.sin_precio);
+    const { orden, detalle, costoTotal } = r;
+    const incompleto = detalle.some(d => d.sin_precio);
 
     res.json({
-      orden: ot[0],
+      orden,
       detalle,
       resumen: {
         costo_total_materiales: costoTotal,
         moneda: 'CLP',
         estado_calculo: incompleto ? 'Estimado/Incompleto' : 'Completo',
         total_insumos: detalle.length,
-        sin_precio: detalle.filter(d => d.sin_precio).length
+        sin_precio: detalle.filter(d => d.sin_precio).length,
+        con_precio_referencial: detalle.filter(d => d.fuente_precio === 'referencial').length,
       }
     });
   } catch (err) {
@@ -811,70 +843,89 @@ async function costos(req, res) {
   }
 }
 
+/** Número de un query param: vacío u omitido → `porDefecto`; texto no numérico → NaN. */
+function numeroDe(valor, porDefecto) {
+  if (valor == null || String(valor).trim() === '') return porDefecto;
+  return Number(String(valor).replace(',', '.'));
+}
+
 /**
- * GET /api/ordenes-trabajo/:id/rentabilidad
- * Calcular precio sugerido con margen (CU-94)
- * Query params: ?margen=25 (porcentaje)
+ * GET /api/ordenes-trabajo/:id/rentabilidad?margen=40[&reserva=15][&adicional=200000]
+ * Precio sugerido (CU-94) con la fórmula del cliente (D75, carta de cotización 250380):
+ *   costo de producción = materiales de la OT + costo adicional por puerta × puertas de la OT
+ *                         (mano de obra, consumibles, pintura y embalaje: no salen de inventario)
+ *   precio por margen   = costo de producción / (1 − margen)
+ *   precio sugerido     = precio por margen / (1 − reserva de negociación)
+ * Montos netos (sin IVA). IVA, descuentos e instalación son de la cotización (Finanzas).
  */
 async function rentabilidad(req, res) {
   const { id } = req.params;
-  const margen = parseFloat(req.query.margen);
+  const margen = numeroDe(req.query.margen, NaN);
+  const reserva = numeroDe(req.query.reserva, 0);
+  const adicional = numeroDe(req.query.adicional, 0);
 
   // CU-94 Exc 3
-  if (isNaN(margen) || margen <= 0) {
-    return res.status(400).json({ error: 'El margen de utilidad debe ser un porcentaje válido mayor a 0' });
+  if (!Number.isFinite(margen) || margen <= 0 || margen >= 100) {
+    return res.status(400).json({ error: 'El margen de utilidad debe ser un porcentaje mayor que 0 y menor que 100.' });
+  }
+  if (!Number.isFinite(reserva) || reserva < 0 || reserva >= 100) {
+    return res.status(400).json({ error: 'La reserva de negociación debe ser un porcentaje entre 0 y menos de 100.' });
+  }
+  if (!Number.isFinite(adicional) || adicional < 0) {
+    return res.status(400).json({ error: 'El costo adicional por puerta debe ser un monto mayor o igual a 0.' });
   }
 
   try {
-    // Reutilizar lógica de costos
-    const { rows: ot } = await query(
-      `SELECT ot.orden_trabajo_id_orden AS id, ot.orden_trabajo_estado AS estado,
-              p.codigo_proyecto AS proyecto_codigo, p.nombre_referencia AS proyecto_nombre
-       FROM orden_trabajo ot
-       LEFT JOIN terreno.proyecto p ON p.id_proyecto = ot.proyecto_id_proyecto
-       WHERE ot.orden_trabajo_id_orden = $1`,
-      [id]
-    );
-
-    if (ot.length === 0) {
+    const r = await costoMaterialesOT(id);
+    if (!r) {
       return res.status(404).json({ error: 'Orden de trabajo no encontrada' });
     }
-
-    const { rows: materiales } = await query(
-      `SELECT
-         mot.material_orden_trabajo_consumo_real      AS cantidad_real,
-         mp.material_proveedor_precio_referencial     AS precio_unitario
-       FROM material_orden_trabajo mot
-       LEFT JOIN material_proveedor mp
-              ON mp.material_sku = mot.material_sku
-             AND mp.material_proveedor_proveedor_principal = TRUE
-       WHERE mot.orden_trabajo_id_orden = $1
-         AND mot.material_orden_trabajo_consumo_real IS NOT NULL`,
-      [id]
-    );
+    const { orden, detalle, costoTotal } = r;
 
     // CU-94 Exc 1
-    if (materiales.length === 0) {
+    if (detalle.length === 0) {
       return res.status(400).json({ error: 'No existen datos de producción disponibles para analizar' });
     }
 
-    const costoTotal = materiales.reduce((s, m) => {
-      return s + (parseFloat(m.cantidad_real || 0) * parseFloat(m.precio_unitario || 0));
-    }, 0);
+    const puertasRegistradas = Number(orden.puertas) > 0;
+    const puertas = puertasRegistradas ? Number(orden.puertas) : 1;
+    const costoAdicional = adicional * puertas;
+    const costoProduccion = costoTotal + costoAdicional;
+    const precioMargen = costoProduccion / (1 - margen / 100);
+    const precioSugerido = Math.round(precioMargen / (1 - reserva / 100));
 
-    const incompleto = materiales.some(m => !m.precio_unitario);
-    const precioSugerido = costoTotal * (1 + margen / 100);
+    const advertencias = [];
+    // CU-94 Exc 2
+    const sinPrecio = detalle.filter(d => d.sin_precio);
+    if (sinPrecio.length) {
+      advertencias.push('El precio sugerido se basa en datos incompletos. Algunos insumos no tienen precio registrado: ' +
+        sinPrecio.map(d => d.nombre).join(', ') + '.');
+    }
+    const referencial = detalle.filter(d => d.fuente_precio === 'referencial');
+    if (referencial.length) {
+      advertencias.push('Sin compras registradas, se usó el precio referencial del proveedor para: ' +
+        referencial.map(d => d.nombre).join(', ') + '.');
+    }
+    if (adicional > 0 && !puertasRegistradas) {
+      advertencias.push('La OT no tiene registrada la cantidad de puertas: el costo adicional se calculó para 1 puerta.');
+    }
 
     res.json({
-      orden: ot[0],
+      orden,
       costo_materiales: costoTotal,
+      costo_adicional_puerta: adicional,
+      puertas,
+      costo_adicional: costoAdicional,
+      costo_produccion: costoProduccion,
       margen_pct: margen,
-      precio_sugerido: Math.round(precioSugerido),
+      precio_margen: Math.round(precioMargen),
+      reserva_pct: reserva,
+      precio_sugerido: precioSugerido,
+      margen_monto: precioSugerido - costoProduccion,
       moneda: 'CLP',
-      // CU-94 Exc 2
-      advertencia: incompleto
-        ? 'El precio sugerido se basa en datos incompletos. Algunos insumos no tienen precio registrado.'
-        : null
+      advertencias,
+      // El primer aviso, con el nombre de antes
+      advertencia: advertencias[0] ?? null,
     });
   } catch (err) {
     console.error('Error calculando rentabilidad:', err);
@@ -999,12 +1050,16 @@ const eliminarMaterial = async (req, res) => {
         [id, sku]
       );
 
-      return { consumoReal, bodegaDevuelta, proyecto_id: ot.proyecto_id };
+      // F-07 (#14): la auditoría muestra el nombre de la bodega, no su id
+      const { rows: bod } = bodegaDevuelta
+        ? await client.query(`SELECT bodega_nombre_bodega AS nombre FROM bodega WHERE bodega_id_bodega = $1`, [bodegaDevuelta])
+        : { rows: [] };
+      return { consumoReal, bodegaDevuelta, bodegaNombre: bod[0]?.nombre, proyecto_id: ot.proyecto_id };
     });
 
     await auditoria.registrar(userId, 'Eliminar material de OT',
       r.consumoReal > 0
-        ? `Material SKU ${sku} eliminado de OT #${id}; se devolvieron ${r.consumoReal} al inventario (bodega #${r.bodegaDevuelta})`
+        ? `Material SKU ${sku} eliminado de OT #${id}; se devolvieron ${r.consumoReal} al inventario (bodega ${r.bodegaNombre ?? '#' + r.bodegaDevuelta})`
         : `Material SKU ${sku} eliminado de OT #${id}`);
     generarAlertasAutomaticas().catch(e => console.warn('Alertas:', e.message));
 
@@ -1335,7 +1390,7 @@ async function procesarDiferenciales(req, res) {
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
-   R1: consumo en la OT desde la receta (docs/sprint/decisiones.md, R1)
+   R1: consumo en la OT desde la receta (docs/incremento-3-4/decisiones.md, R1)
    ══════════════════════════════════════════════════════════════════════════ */
 
 const CANTIDAD_OT_RE = /^\d+(\.\d{1,4})?$/;
@@ -1366,8 +1421,12 @@ function cantidadOT(v) {
 
 /**
  * PUT /api/ordenes-trabajo/:id/consumo
- * Body: { receta_id?, cantidad_puertas?, reemplazar_receta?, bodega_id?,
- *         lineas: [{ sku, estimado?, real }] }
+ * Body: { receta_id?, cantidad_puertas?, reemplazar_receta?, bodega_id?, motivo?,
+ *         lineas: [{ sku, estimado?, real, motivo? }] }
+ *
+ * F-05: cambiar un real YA guardado (consumo extra o menor) exige el `motivo` de la línea;
+ * quitar un material que tenía consumo exige el `motivo` general. El primer registro no lo pide.
+ * El motivo queda en la descripción del movimiento de la diferencia.
  *
  * `lineas` es el estado COMPLETO deseado del consumo de la OT (pestaña Consumo):
  *  - "estimado" = columna "Según receta" (null en un material agregado a mano).
@@ -1418,7 +1477,12 @@ async function guardarConsumo(req, res) {
         if (l.estimado != null && l.estimado !== '' && estimado == null) {
           errores.push({ sku, error: 'La cantidad según receta no es válida.' });
         }
-        lineas.push({ sku, estimado, realTxt: l.real });
+        lineas.push({ sku, estimado, realTxt: l.real, motivo: String(l.motivo ?? '').trim() });
+      }
+      // F-05: motivo para quitar materiales que ya tenían consumo (no vienen en `lineas`)
+      const motivoGeneral = String(b.motivo ?? '').trim();
+      if (motivoGeneral.length > MAX_MOTIVO_CORRECCION) {
+        errores.push({ sku: null, error: `El motivo admite hasta ${MAX_MOTIVO_CORRECCION} caracteres.` });
       }
 
       // Materiales: existen, no son herramientas; pinturas identificadas
@@ -1436,6 +1500,8 @@ async function guardarConsumo(req, res) {
          FROM material_orden_trabajo WHERE orden_trabajo_id_orden = $1 FOR UPDATE`, [id]
       );
       const registrado = new Map(actuales.map(a => [a.sku, a.real == null ? 0 : parseFloat(a.real)]));
+      // F-05: con real ya guardado, cambiarlo es un consumo extra o menor y exige motivo
+      const conRealGuardado = new Set(actuales.filter(a => a.real != null).map(a => a.sku));
 
       for (const l of lineas) {
         const m = porSku.get(l.sku);
@@ -1451,6 +1517,13 @@ async function guardarConsumo(req, res) {
         if (Math.abs(l.delta) > 1e-9 && m.estado !== 'activo') {
           errores.push({ sku: l.sku, error: 'El material está inactivo: no se puede registrar ni corregir su consumo. Reactívelo o quítelo.' });
         }
+        if (Math.abs(l.delta) > 1e-9 && conRealGuardado.has(l.sku)) {
+          if (!l.motivo) {
+            errores.push({ sku: l.sku, campo: 'motivo', error: 'Ya tenía un consumo registrado: indique el motivo del cambio.' });
+          } else if (l.motivo.length > MAX_MOTIVO_CORRECCION) {
+            errores.push({ sku: l.sku, campo: 'motivo', error: `El motivo admite hasta ${MAX_MOTIVO_CORRECCION} caracteres.` });
+          }
+        }
       }
 
       // Materiales que se quitan: los de la OT que no vienen en la lista
@@ -1463,6 +1536,8 @@ async function guardarConsumo(req, res) {
       for (const q of quitados) {
         if (conSeguimiento.has(q.sku)) {
           errores.push({ sku: q.sku, error: 'Tiene usos en el Seguimiento de pinturas: no se puede quitar de la OT.' });
+        } else if (q.real != null && parseFloat(q.real) > 1e-9 && !motivoGeneral) {
+          errores.push({ sku: q.sku, campo: 'motivo', error: 'Tenía consumo registrado: indique el motivo para quitarlo de la OT.' });
         }
       }
 
@@ -1502,29 +1577,30 @@ async function guardarConsumo(req, res) {
 
       /* ── 2. Mover stock por la diferencia (primero lo que se devuelve) ── */
       const cambios = [];
-      const aplicar = async (sku, delta, anterior, nuevo) => {
+      const aplicar = async (sku, delta, anterior, nuevo, motivo) => {
         try {
           await aplicarDeltaConsumo(client, {
             delta, sku, otId: id, ot, bodegaSolicitada: delta > 0 ? bodegaId : null, userId,
-            nota: `Consumo OT #${id} (${anterior} → ${nuevo})`,
+            // F-05: el motivo del consumo extra o menor queda en el movimiento de la diferencia
+            nota: `Consumo OT #${id} (${anterior} → ${nuevo})` + (motivo ? `: ${motivo}` : ''),
           });
         } catch (e) {
           if (e instanceof ErrorNegocio) e.payload = { ...e.payload, error: `${sku}: ${e.payload.error}`, sku };
           throw e;
         }
-        cambios.push({ sku, anterior, nuevo, delta });
+        cambios.push({ sku, anterior, nuevo, delta, ...(motivo && { motivo }) });
       };
 
       for (const q of quitados) {
         const real = q.real == null ? 0 : parseFloat(q.real);
-        if (real > 1e-9) await aplicar(q.sku, -real, real, 0);
+        if (real > 1e-9) await aplicar(q.sku, -real, real, 0, motivoGeneral);
         await client.query(
           `DELETE FROM material_orden_trabajo WHERE orden_trabajo_id_orden = $1 AND material_sku = $2`, [id, q.sku]
         );
       }
       const noPintura = lineas.filter(l => !l.esPintura);
       for (const l of [...noPintura.filter(x => x.delta < 0), ...noPintura.filter(x => x.delta >= 0)]) {
-        if (Math.abs(l.delta) > 1e-9) await aplicar(l.sku, l.delta, l.anterior, l.real);
+        if (Math.abs(l.delta) > 1e-9) await aplicar(l.sku, l.delta, l.anterior, l.real, conRealGuardado.has(l.sku) ? l.motivo : '');
       }
 
       /* ── 3. Estimado y real de cada línea; pinturas desde su seguimiento ── */
@@ -1552,7 +1628,7 @@ async function guardarConsumo(req, res) {
       return { cambios, quitados: quitados.map(q => q.sku), lineas: lineas.length };
     });
 
-    const detalle = r.cambios.map(c => `${c.sku} ${c.anterior}→${c.nuevo}`).join(', ');
+    const detalle = r.cambios.map(c => `${c.sku} ${c.anterior}→${c.nuevo}` + (c.motivo ? ` (${c.motivo})` : '')).join(', ');
     await auditoria.registrar(userId, 'Guardar consumo OT',
       `OT #${id}` + (b.receta_id ? ` · receta #${b.receta_id} × ${b.cantidad_puertas}` : '') +
       `: ${detalle || 'sin movimientos de stock'}` + (r.quitados.length ? ` · quitados: ${r.quitados.join(', ')}` : ''));
@@ -1718,7 +1794,485 @@ async function corregirConsumoCerrada(req, res) {
   }
 }
 
+/* ══════════════════════════════════════════════════════════════════════
+   F-06 (D70, D71): crear OT desde Inventario. Una OT por área.
+   ══════════════════════════════════════════════════════════════════════ */
+
+const ESTADO_OT_INICIAL = 'pendiente';
+
+/** Proyecto de Terreno de una venta (finanzas, solo lectura), por su proyecto financiero. */
+const SQL_VENTAS_CON_PROYECTO = `
+  SELECT nv.id_nota_venta AS id, nv.numero_nota_venta AS numero, nv.estado_pedido AS estado,
+         nv.fecha_max_entrega AS fecha_entrega, pf.id_proyecto_terreno AS proyecto_id
+  FROM finanzas.nota_venta nv
+  LEFT JOIN finanzas.proyecto_financiero pf ON pf.id_proyecto_financiero = nv.id_proyecto_financiero`;
+
+/**
+ * GET /api/ordenes-trabajo/opciones-nueva
+ * Lo que necesita el formulario "Nueva OT": áreas activas, proyectos de Terreno, ventas
+ * aprobadas o en proceso (D44) con su proyecto, y usuarios activos para responsable.
+ * Las recetas se piden aparte (GET /recetas).
+ */
+async function opcionesNueva(req, res) {
+  try {
+    const [areas, proyectos, ventas, usuarios] = await Promise.all([
+      query(`SELECT area_trabajo_id_area AS id, area_trabajo_nombre_area AS nombre
+             FROM area_trabajo WHERE area_trabajo_activo IS NOT FALSE ORDER BY area_trabajo_nombre_area`),
+      query(`SELECT id_proyecto AS id, codigo_proyecto AS codigo, nombre_referencia AS nombre
+             FROM terreno.proyecto ORDER BY codigo_proyecto`),
+      query(`${SQL_VENTAS_CON_PROYECTO}
+             WHERE LOWER(nv.estado_pedido) = ANY($1::text[])
+             ORDER BY nv.fecha_max_entrega NULLS LAST, nv.numero_nota_venta`, [ESTADOS_VINCULABLES]),
+      query(`SELECT usuario_id_usuario AS id, usuario_username AS username,
+                    TRIM(CONCAT(usuario_nombre_completo_primer_nombre_usuario, ' ',
+                                usuario_nombre_completo_primer_apellido_usuario)) AS nombre
+             FROM usuario WHERE usuario_estado_cuenta IN ('activo', 'activa') ORDER BY usuario_username`),
+    ]);
+    res.json({ areas: areas.rows, proyectos: proyectos.rows, ventas: ventas.rows, usuarios: usuarios.rows });
+  } catch (err) {
+    responderError(res, err, 'Error cargando las opciones de la nueva OT:');
+  }
+}
+
+/**
+ * POST /api/ordenes-trabajo   (soloOperativo) — F-06
+ * Body: { area_id, proyecto_id?, nota_venta_id?, receta_id?, cantidad_puertas?, responsable_id? }
+ *
+ * La OT no tiene columna de venta: si se elige una venta, se liga a SU proyecto de Terreno
+ * (proyecto_financiero.id_proyecto_terreno) y, si no tiene, se rechaza. La receta debe tener
+ * insumos del área (R1: la OT carga solo los de su área). Responsable por defecto: quien la crea.
+ * Todo se valida antes de escribir; la auditoría va después del COMMIT.
+ */
+async function crear(req, res) {
+  const b = req.body || {};
+  const id = (v) => (v == null || v === '' ? null : String(v));
+  const areaId = id(b.area_id), proyectoPedido = id(b.proyecto_id), ventaId = id(b.nota_venta_id);
+  const recetaId = id(b.receta_id), responsableId = id(b.responsable_id) ?? String(req.user.id);
+
+  for (const [valor, nombre] of [[areaId, 'El área'], [proyectoPedido, 'El proyecto'], [ventaId, 'La venta'],
+                                 [recetaId, 'La receta'], [responsableId, 'El responsable']]) {
+    if (valor != null && !/^\d+$/.test(valor)) return res.status(400).json({ error: `${nombre} no es válido.` });
+  }
+  if (!areaId) return res.status(400).json({ error: 'Indique el área de la OT.', campo: 'area_id' });
+  let puertas = null;
+  if (recetaId) {
+    puertas = Number(b.cantidad_puertas);
+    if (!Number.isInteger(puertas) || puertas < 1 || puertas > 1000) {
+      return res.status(400).json({ error: 'La cantidad de puertas debe ser un número entero entre 1 y 1000.', campo: 'cantidad_puertas' });
+    }
+  }
+
+  try {
+    const ot = await conTransaccion(async (client) => {
+      const { rows: area } = await client.query(
+        `SELECT area_trabajo_nombre_area AS nombre, area_trabajo_activo AS activo
+         FROM area_trabajo WHERE area_trabajo_id_area = $1`, [areaId]);
+      if (!area.length) throw new ErrorNegocio(400, { error: 'El área no existe.', campo: 'area_id' });
+      if (area[0].activo === false) throw new ErrorNegocio(400, { error: `El área ${area[0].nombre} está inactiva.`, campo: 'area_id' });
+
+      // Proyecto: el elegido o el de la venta (deben coincidir si vienen los dos)
+      let proyectoId = proyectoPedido;
+      let venta = null;
+      if (ventaId) {
+        const { rows } = await client.query(`${SQL_VENTAS_CON_PROYECTO} WHERE nv.id_nota_venta = $1`, [ventaId]);
+        venta = rows[0];
+        if (!venta) throw new ErrorNegocio(400, { error: 'La venta no existe.', campo: 'nota_venta_id' });
+        if (!ESTADOS_VINCULABLES.includes(String(venta.estado).toLowerCase())) {
+          throw new ErrorNegocio(400, { error: `La venta ${venta.numero} no está aprobada ni en proceso.`, campo: 'nota_venta_id' });
+        }
+        if (venta.proyecto_id == null) {
+          throw new ErrorNegocio(400, {
+            error: `La venta ${venta.numero} no tiene un proyecto de Terreno asociado: elija el proyecto directamente.`,
+            campo: 'nota_venta_id',
+          });
+        }
+        if (proyectoId && proyectoId !== String(venta.proyecto_id)) {
+          throw new ErrorNegocio(400, { error: `La venta ${venta.numero} pertenece a otro proyecto.`, campo: 'proyecto_id' });
+        }
+        proyectoId = String(venta.proyecto_id);
+      }
+      let proyecto = null;   // F-07 (#14): código y nombre para la auditoría
+      if (proyectoId) {
+        const { rows } = await client.query(
+          `SELECT codigo_proyecto AS codigo, nombre_referencia AS nombre FROM terreno.proyecto WHERE id_proyecto = $1`, [proyectoId]);
+        if (!rows.length) throw new ErrorNegocio(400, { error: 'El proyecto no existe.', campo: 'proyecto_id' });
+        proyecto = `${rows[0].codigo} ${rows[0].nombre}`;
+      }
+
+      if (recetaId) {
+        const { rows: rec } = await client.query(
+          `SELECT pt.producto_terminado_codigo_producto AS codigo, pt.producto_terminado_activo AS activo,
+                  EXISTS (SELECT 1 FROM material_producto_terminado mpt
+                          WHERE mpt.producto_terminado_id_producto = pt.producto_terminado_id_producto
+                            AND mpt.area_trabajo_id_area = $2) AS tiene_del_area
+           FROM producto_terminado pt WHERE pt.producto_terminado_id_producto = $1`, [recetaId, areaId]);
+        if (!rec.length) throw new ErrorNegocio(400, { error: 'La receta no existe.', campo: 'receta_id' });
+        if (!rec[0].activo) throw new ErrorNegocio(400, { error: `La receta ${rec[0].codigo} está inactiva.`, campo: 'receta_id' });
+        if (!rec[0].tiene_del_area) {
+          throw new ErrorNegocio(400, { error: `La receta ${rec[0].codigo} no tiene insumos del área ${area[0].nombre}.`, campo: 'receta_id' });
+        }
+      }
+
+      const { rows: resp } = await client.query(
+        `SELECT usuario_username AS username, usuario_estado_cuenta AS estado FROM usuario WHERE usuario_id_usuario = $1`,
+        [responsableId]);
+      if (!resp.length) throw new ErrorNegocio(400, { error: 'El responsable no existe.', campo: 'responsable_id' });
+      if (!['activo', 'activa'].includes(resp[0].estado)) {
+        throw new ErrorNegocio(400, { error: `El responsable ${resp[0].username} no tiene la cuenta activa.`, campo: 'responsable_id' });
+      }
+
+      const { rows: [nueva] } = await client.query(
+        `INSERT INTO orden_trabajo (orden_trabajo_estado, area_trabajo_id_area, usuario_id_usuario, proyecto_id_proyecto,
+                                    producto_terminado_id_producto, orden_trabajo_cantidad_puertas)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         RETURNING orden_trabajo_id_orden AS id`,
+        [ESTADO_OT_INICIAL, areaId, responsableId, proyectoId, recetaId, puertas]);
+      return { id: Number(nueva.id), area: area[0].nombre, responsable: resp[0].username, venta, proyecto };
+    });
+
+    await auditoria.registrar(req.user.id, 'crear_orden_trabajo',
+      `OT #${ot.id} · área ${ot.area} · responsable ${ot.responsable}` +
+      (ot.venta ? ` · venta ${ot.venta.numero}` : '') + (ot.proyecto ? ` · proyecto ${ot.proyecto}` : '') +
+      (recetaId ? ` · receta #${recetaId} × ${puertas}` : ''));
+    res.status(201).json({ id: ot.id, estado: ESTADO_OT_INICIAL, message: `OT #${ot.id} creada.` });
+  } catch (err) {
+    responderError(res, err, 'Error creando la OT:');
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   F-28: anular (nunca borrar) una OT
+   ══════════════════════════════════════════════════════════════════════ */
+
+/**
+ * PUT /api/ordenes-trabajo/:id/anular   (gerencia y jop) — F-28
+ * Body: { motivo }
+ *
+ * La OT pasa a 'cancelada' y conserva su historial (consumos devueltos, movimientos, auditoría).
+ * Solo una OT abierta y SIN consumo vigente: si algún material tiene real > 0 o hay pinturas en
+ * el Seguimiento sin anular, 409 con el detalle; primero se devuelve el consumo (real 0, F-05).
+ * Sus reservas activas se liberan en la misma transacción. El motivo queda en la auditoría y en
+ * las reservas liberadas (la OT no tiene columna de motivo; agregarla sería DDL).
+ */
+async function anular(req, res) {
+  const { id } = req.params;
+  if (!/^\d+$/.test(String(id))) return res.status(400).json({ error: 'El id de la OT debe ser numérico' });
+  const motivo = String(req.body?.motivo ?? '').trim();
+  if (!motivo) return res.status(400).json({ error: 'Indique el motivo de la anulación.', campo: 'motivo' });
+  if (motivo.length > MAX_MOTIVO_CORRECCION) {
+    return res.status(400).json({ error: `El motivo admite hasta ${MAX_MOTIVO_CORRECCION} caracteres.`, campo: 'motivo' });
+  }
+
+  try {
+    const r = await conTransaccion(async (client) => {
+      const { rows: ot } = await client.query(
+        `SELECT orden_trabajo_estado AS estado FROM orden_trabajo WHERE orden_trabajo_id_orden = $1 FOR UPDATE`, [id]);
+      if (!ot.length) throw new ErrorNegocio(404, { error: 'Orden de trabajo no encontrada' });
+      if (ESTADOS_OT_CERRADA.includes(String(ot[0].estado).toLowerCase())) {
+        throw new ErrorNegocio(400, { error: `La orden de trabajo ya está ${ot[0].estado}: no se puede anular.` });
+      }
+
+      // Consumo vigente: lo descontado y no devuelto, y las pinturas del seguimiento
+      const { rows: consumos } = await client.query(
+        `SELECT mot.material_sku AS sku, m.material_nombre_material AS nombre,
+                mot.material_orden_trabajo_consumo_real::float AS real
+         FROM material_orden_trabajo mot
+         JOIN material m ON m.material_sku = mot.material_sku
+         WHERE mot.orden_trabajo_id_orden = $1 AND mot.material_orden_trabajo_consumo_real > 0
+         ORDER BY mot.material_sku`, [id]);
+      const { rows: [pint] } = await client.query(
+        `SELECT COUNT(*)::int AS n FROM seguimiento_pintura WHERE orden_trabajo_id_orden = $1 AND estado <> 'anulado'`, [id]);
+      if (consumos.length > 0 || pint.n > 0) {
+        throw new ErrorNegocio(409, {
+          error: 'No se puede anular: la OT tiene consumo registrado. ' + [
+            consumos.length > 0 && `Devuelva primero a bodega lo consumido (deje el real en 0 en Consumo): ${consumos.map(c => `${c.sku} ${c.real}`).join(', ')}.`,
+            pint.n > 0 && `Anule primero los ${pint.n} registro(s) del Seguimiento de pinturas.`,
+          ].filter(Boolean).join(' '),
+          codigo: 'OT_CON_CONSUMO', consumos, pinturas: pint.n,
+        });
+      }
+
+      // Reservas activas: se liberan con el mismo cierre que usa la pantalla de Reservas
+      const { rows: reservas } = await client.query(
+        `SELECT reserva_inventario_id_reserva AS id FROM reserva_inventario
+         WHERE orden_trabajo_id_orden = $1 AND reserva_inventario_estado_reserva = 'activa'
+         ORDER BY reserva_inventario_id_reserva`, [id]);
+      for (const res_ of reservas) {
+        await cerrarReserva(client, res_.id, 'liberada', { usuarioId: req.user.id, motivo: `OT #${id} anulada: ${motivo}` });
+      }
+
+      await client.query(
+        `UPDATE orden_trabajo SET orden_trabajo_estado = $2 WHERE orden_trabajo_id_orden = $1`, [id, ESTADO_OT_CANCELADA]);
+      return { reservas: reservas.length };
+    });
+
+    await auditoria.registrar(req.user.id, 'anular_ot',
+      `OT #${id} anulada: ${motivo}` + (r.reservas ? ` · ${r.reservas} reserva(s) liberada(s)` : ''));
+    res.json({
+      message: `OT #${id} anulada.` + (r.reservas ? ` Se liberaron ${r.reservas} reserva(s).` : ''),
+      reservas_liberadas: r.reservas,
+    });
+  } catch (err) {
+    responderError(res, err, 'Error anulando la OT:');
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   B-03: cambiar el responsable de una OT
+   ══════════════════════════════════════════════════════════════════════ */
+
+/**
+ * Valida que `id` sea un usuario activo que puede quedar como responsable.
+ * Lanza ErrorNegocio 400 si no. Devuelve su username. (Lo comparte usuariosController.reasignarOT.)
+ */
+async function validarResponsable(client, id) {
+  if (!/^\d+$/.test(String(id ?? ''))) throw new ErrorNegocio(400, { error: 'Indique el nuevo responsable.', campo: 'responsable_id' });
+  const { rows } = await client.query(
+    `SELECT usuario_username AS username, usuario_estado_cuenta AS estado FROM usuario WHERE usuario_id_usuario = $1`, [id]);
+  if (!rows.length) throw new ErrorNegocio(400, { error: 'El responsable no existe.', campo: 'responsable_id' });
+  if (!['activo', 'activa'].includes(rows[0].estado)) {
+    throw new ErrorNegocio(400, { error: `${rows[0].username} no tiene la cuenta activa.`, campo: 'responsable_id' });
+  }
+  return rows[0].username;
+}
+
+/**
+ * PUT /api/ordenes-trabajo/:id/responsable   (soloGerencia) — B-03
+ * Body: { responsable_id }. Solo una OT abierta; el nuevo responsable, activo y distinto del actual.
+ */
+async function cambiarResponsable(req, res) {
+  const { id } = req.params;
+  if (!/^\d+$/.test(String(id))) return res.status(400).json({ error: 'El id de la OT debe ser numérico' });
+  const nuevo = req.body?.responsable_id;
+  try {
+    const r = await conTransaccion(async (client) => {
+      const { rows: ot } = await client.query(
+        `SELECT ot.orden_trabajo_estado AS estado, ot.usuario_id_usuario AS actual_id, u.usuario_username AS actual
+         FROM orden_trabajo ot LEFT JOIN usuario u ON u.usuario_id_usuario = ot.usuario_id_usuario
+         WHERE ot.orden_trabajo_id_orden = $1 FOR UPDATE OF ot`, [id]);
+      if (!ot.length) throw new ErrorNegocio(404, { error: 'Orden de trabajo no encontrada' });
+      if (ESTADOS_OT_CERRADA.includes(String(ot[0].estado).toLowerCase())) {
+        throw new ErrorNegocio(400, { error: `La orden de trabajo está ${ot[0].estado}: no se cambia su responsable.` });
+      }
+      const username = await validarResponsable(client, nuevo);
+      if (String(ot[0].actual_id) === String(nuevo)) {
+        throw new ErrorNegocio(400, { error: `${username} ya es el responsable de esta OT.`, campo: 'responsable_id' });
+      }
+      await client.query(`UPDATE orden_trabajo SET usuario_id_usuario = $2 WHERE orden_trabajo_id_orden = $1`, [id, nuevo]);
+      return { anterior: ot[0].actual, nuevo: username };
+    });
+    await auditoria.registrar(req.user.id, 'cambiar_responsable_ot', `OT #${id}: ${r.anterior ?? '—'} → ${r.nuevo}`);
+    res.json({ message: `Responsable de la OT #${id}: ${r.nuevo}.` });
+  } catch (err) {
+    responderError(res, err, 'Error cambiando el responsable de la OT:');
+  }
+}
+
+/**
+ * PUT /api/ordenes-trabajo/:id/medidas   (soloOperativo) — F-08 (D74)
+ * Body: { medidas: { vano_ancho_mm, vano_alto_mm, hojas, mdf, perfil_marco_mm } } o { medidas: null }
+ * para quitarlas. Solo una OT abierta. No mueve stock: las cantidades por fórmula se recalculan
+ * al precargar la receta en la pestaña Consumo.
+ */
+async function guardarMedidas(req, res) {
+  const { id } = req.params;
+  if (!/^\d+$/.test(String(id))) return res.status(400).json({ error: 'El id de la OT debe ser numérico' });
+  const body = req.body || {};
+  if (!('medidas' in body)) return res.status(400).json({ error: 'Indique las medidas de la puerta.' });
+  let medidas = null;
+  if (body.medidas != null) {
+    const n = normalizarMedidas(body.medidas);
+    if (n.errores) {
+      return res.status(400).json({
+        error: n.errores.length === 1 ? n.errores[0].error + '.' : 'Revise las medidas de la puerta.', errores: n.errores,
+      });
+    }
+    medidas = n.medidas;
+  }
+  try {
+    await conTransaccion(async (client) => {
+      const { rows: ot } = await client.query(
+        `SELECT orden_trabajo_estado AS estado FROM orden_trabajo WHERE orden_trabajo_id_orden = $1 FOR UPDATE`, [id]);
+      if (!ot.length) throw new ErrorNegocio(404, { error: 'Orden de trabajo no encontrada' });
+      if (ESTADOS_OT_CERRADA.includes(String(ot[0].estado).toLowerCase())) {
+        throw new ErrorNegocio(400, { error: `La orden de trabajo está ${ot[0].estado}: no se cambian sus medidas.` });
+      }
+      await client.query(`UPDATE orden_trabajo SET orden_trabajo_medidas = $2 WHERE orden_trabajo_id_orden = $1`,
+        [id, medidas == null ? null : JSON.stringify(medidas)]);
+    });
+    const texto = medidas
+      ? `vano ${medidas.vano_ancho_mm} × ${medidas.vano_alto_mm} mm, ${medidas.hojas} hoja(s), ` +
+        `perfil ${medidas.perfil_marco_mm} mm${medidas.mdf ? ', con MDF' : ''}`
+      : 'sin medidas';
+    await auditoria.registrar(req.user.id, 'medidas_ot', `OT #${id}: ${texto}`);
+    res.json({ message: medidas ? `Medidas guardadas: ${texto}.` : 'Se quitaron las medidas de la OT.', medidas });
+  } catch (err) {
+    responderError(res, err, 'Error guardando las medidas de la OT:');
+  }
+}
+
+/**
+ * GET /api/ordenes-trabajo/proyectos
+ * F-24: proyectos de Terreno (solo lectura) con sus OT abiertas, terminadas y anuladas, para
+ * crear una OT desde el proyecto. Lista todos; la vista marca los de prueba.
+ */
+async function proyectosConOT(req, res) {
+  try {
+    const { rows } = await query(
+      `SELECT p.id_proyecto AS id, p.codigo_proyecto AS codigo, p.nombre_referencia AS nombre,
+              to_char(p.fecha_instalacion, 'YYYY-MM-DD') AS fecha_instalacion,
+              p.estado_operacional, p.estado_produccion,
+              COUNT(ot.orden_trabajo_id_orden) FILTER (
+                WHERE LOWER(ot.orden_trabajo_estado) NOT IN (${SQL_ESTADOS_OT_CERRADA}))::int AS ot_abiertas,
+              COUNT(ot.orden_trabajo_id_orden) FILTER (
+                WHERE LOWER(ot.orden_trabajo_estado) IN (${SQL_ESTADOS_OT_CERRADA})
+                  AND LOWER(ot.orden_trabajo_estado) <> $1)::int AS ot_terminadas,
+              COUNT(ot.orden_trabajo_id_orden) FILTER (
+                WHERE LOWER(ot.orden_trabajo_estado) = $1)::int AS ot_anuladas
+       FROM terreno.proyecto p
+       LEFT JOIN orden_trabajo ot ON ot.proyecto_id_proyecto = p.id_proyecto
+       GROUP BY p.id_proyecto
+       ORDER BY p.codigo_proyecto`,
+      [ESTADO_OT_CANCELADA]
+    );
+    res.json(rows);
+  } catch (err) {
+    responderError(res, err, 'Error listando los proyectos:');
+  }
+}
+
+/* ── F-29 (D83): crear proyectos desde Inventario, temporal ──
+   Excepción a la regla 7 autorizada por el usuario (11/10): mientras Terreno no cree proyectos, gerencia
+   los crea aquí (y su cliente, si es nuevo) para poder abrir OT durante la marcha blanca. Se quita cuando
+   Terreno (o el schema común, P-08) los cree; en F-26 se migran si proyecto cambia de schema. */
+
+// Valores que usan los datos de Terreno disponibles; Terreno aún no define otros.
+const PROYECTO_ESTADO_OPERACIONAL = 'en_curso';
+const PROYECTO_ESTADO_PRODUCCION = 'en_proceso';
+const CODIGO_PROYECTO_MAX = 30;
+
+/** RUT chileno '12345678-5' (sin puntos, guion y DV) validado por módulo 11; null si no es válido. */
+function normalizarRut(valor) {
+  const s = String(valor ?? '').replace(/\./g, '').replace(/\s/g, '').toUpperCase();
+  const m = /^(\d{7,8})-?([\dK])$/.exec(s);
+  if (!m) return null;
+  let suma = 0, mult = 2;
+  for (const d of m[1].split('').reverse()) { suma += Number(d) * mult; mult = mult === 7 ? 2 : mult + 1; }
+  const r = 11 - (suma % 11);
+  const dv = r === 11 ? '0' : r === 10 ? 'K' : String(r);
+  return dv === m[2] ? `${m[1]}-${dv}` : null;
+}
+
+/** Siguiente código libre PRY-AAAA-NNN del año en curso. */
+async function codigoProyectoSugerido(db) {
+  const anio = new Date().getFullYear();
+  const { rows } = await db.query(
+    `SELECT COALESCE(MAX(SUBSTRING(codigo_proyecto FROM '^PRY-${anio}-(\\d+)$')::int), 0) + 1 AS n
+     FROM terreno.proyecto WHERE codigo_proyecto ~ '^PRY-${anio}-\\d+$'`);
+  return `PRY-${anio}-${String(rows[0].n).padStart(3, '0')}`;
+}
+
+/**
+ * GET /api/ordenes-trabajo/proyectos/nuevo (gerencia)
+ * Lo que necesita el formulario "Nuevo proyecto": clientes de Terreno y el código sugerido.
+ */
+async function opcionesNuevoProyecto(req, res) {
+  try {
+    const { rows: clientes } = await query(
+      `SELECT rut_cliente AS rut, razon_social FROM terreno.cliente ORDER BY razon_social`);
+    res.json({ clientes, codigo_sugerido: await codigoProyectoSugerido({ query }) });
+  } catch (err) {
+    responderError(res, err, 'Error cargando las opciones del nuevo proyecto:');
+  }
+}
+
+/**
+ * POST /api/ordenes-trabajo/proyectos (gerencia)
+ * Body: { codigo, nombre, fecha_instalacion, rut_cliente } o, con un cliente nuevo,
+ *       { codigo, nombre, fecha_instalacion, cliente_nuevo: { rut, razon_social, contacto, correo, telefono, es_empresa } }
+ * Escribe en terreno.proyecto (y terreno.cliente) en una transacción. El código no se repite.
+ */
+async function crearProyecto(req, res) {
+  const b = req.body || {};
+  const txt = (v) => (typeof v === 'string' ? v.trim() : '');
+  const malo = (error, campo) => res.status(400).json({ error, campo });
+
+  const codigo = txt(b.codigo).toUpperCase();
+  const nombre = txt(b.nombre);
+  const fecha = txt(b.fecha_instalacion);
+  if (!codigo || codigo.length > CODIGO_PROYECTO_MAX || !/^[A-Z0-9][A-Z0-9-]*$/.test(codigo)) {
+    return malo(`El código es obligatorio: letras, números y guiones, hasta ${CODIGO_PROYECTO_MAX} caracteres.`, 'codigo');
+  }
+  if (nombre.length < 3 || nombre.length > 150) return malo('El nombre debe tener entre 3 y 150 caracteres.', 'nombre');
+  const [fa, fm, fd] = fecha.split('-').map(Number);
+  const fechaReal = new Date(fa, fm - 1, fd);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha) || fechaReal.getMonth() !== fm - 1 || fechaReal.getDate() !== fd) {
+    return malo('Indique la fecha de instalación.', 'fecha_instalacion');
+  }
+
+  let clienteNuevo = null;
+  let rutCliente = null;
+  if (b.cliente_nuevo) {
+    const c = b.cliente_nuevo;
+    const rut = normalizarRut(c.rut);
+    if (!rut) return malo('El RUT del cliente no es válido (ej: 12345678-5).', 'cliente_rut');
+    for (const [campo, titulo] of [['razon_social', 'el nombre o razón social'], ['contacto', 'el contacto'], ['telefono', 'el teléfono']]) {
+      if (!txt(c[campo])) return malo(`Indique ${titulo} del cliente.`, `cliente_${campo}`);
+    }
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(txt(c.correo))) return malo('El correo del cliente no es válido.', 'cliente_correo');
+    clienteNuevo = { rut, razon_social: txt(c.razon_social), contacto: txt(c.contacto), correo: txt(c.correo),
+                     telefono: txt(c.telefono), es_empresa: c.es_empresa !== false };
+    rutCliente = rut;
+  } else {
+    rutCliente = normalizarRut(b.rut_cliente) || txt(b.rut_cliente);
+    if (!rutCliente) return malo('Elija el cliente del proyecto o cree uno nuevo.', 'rut_cliente');
+  }
+
+  try {
+    const creado = await conTransaccion(async (client) => {
+      // Dos proyectos con el mismo código creados a la vez: el segundo espera y ve el primero
+      await client.query(`SELECT pg_advisory_xact_lock(hashtext('terreno.proyecto.codigo'))`);
+      const { rows: dup } = await client.query(
+        `SELECT 1 FROM terreno.proyecto WHERE UPPER(TRIM(codigo_proyecto)) = $1`, [codigo]);
+      if (dup.length) {
+        throw new ErrorNegocio(409, { error: `Ya existe un proyecto con el código ${codigo}.`, campo: 'codigo',
+                                      codigo_sugerido: await codigoProyectoSugerido(client) });
+      }
+
+      const { rows: cli } = await client.query(`SELECT 1 FROM terreno.cliente WHERE rut_cliente = $1`, [rutCliente]);
+      if (clienteNuevo && cli.length) {
+        throw new ErrorNegocio(409, { error: `El cliente ${rutCliente} ya existe: elíjalo de la lista.`, campo: 'cliente_rut' });
+      }
+      if (!clienteNuevo && !cli.length) {
+        throw new ErrorNegocio(404, { error: 'El cliente elegido no existe.', campo: 'rut_cliente' });
+      }
+      if (clienteNuevo) {
+        await client.query(
+          `INSERT INTO terreno.cliente (rut_cliente, razon_social, contacto_principal, correo, telefono, es_cliente_b2c, es_cliente_b2b)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+          [clienteNuevo.rut, clienteNuevo.razon_social, clienteNuevo.contacto, clienteNuevo.correo, clienteNuevo.telefono,
+           !clienteNuevo.es_empresa, clienteNuevo.es_empresa]);
+      }
+
+      const { rows } = await client.query(
+        `INSERT INTO terreno.proyecto (codigo_proyecto, nombre_referencia, fecha_instalacion, fecha_ingreso,
+                                       estado_operacional, estado_produccion, rut_cliente)
+         VALUES ($1, $2, $3, CURRENT_DATE, $4, $5, $6)
+         RETURNING id_proyecto AS id, codigo_proyecto AS codigo, nombre_referencia AS nombre`,
+        [codigo, nombre, fecha, PROYECTO_ESTADO_OPERACIONAL, PROYECTO_ESTADO_PRODUCCION, rutCliente]);
+      return rows[0];
+    });
+
+    await auditoria.registrar(req.user?.id, 'crear_proyecto',
+      `Proyecto ${creado.codigo} (#${creado.id})${clienteNuevo ? `, cliente nuevo ${clienteNuevo.rut}` : ''}`);
+    res.status(201).json({ ...creado, cliente_creado: !!clienteNuevo });
+  } catch (err) {
+    responderError(res, err, 'Error creando el proyecto:');
+  }
+}
+
 module.exports = {
+  crear, opcionesNueva, anular, proyectosConOT, opcionesNuevoProyecto, crearProyecto, cambiarResponsable, validarResponsable, guardarMedidas,
   listar, consultarConsumos, registrarConsumo, editarConsumo,
   registrarEstimados, comparativo, costos, rentabilidad,
   eliminarMaterial, asignarEmpleadoTentativo, movimientosOT,

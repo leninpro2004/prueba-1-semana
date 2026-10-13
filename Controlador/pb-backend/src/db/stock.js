@@ -54,6 +54,27 @@ async function motivoDevolucionConsumo(client) {
 }
 
 /**
+ * F-23 (D86): motivo de las entradas de material comprado con caja chica. Si falta se falla:
+ * sin él la entrada no se distinguiría de una compra a proveedor ni de una devolución.
+ */
+async function motivoCompraCajaChica(client) {
+  const id = await motivoMovimientoId(client, 'compra_caja_chica');
+  if (!id) {
+    throw new ErrorNegocio(500, {
+      error: 'Falta el motivo de movimiento "compra_caja_chica" en el catálogo. Restáurelo en Catálogos → Motivos o avise al administrador del sistema.',
+    });
+  }
+  return id;
+}
+
+/**
+ * F-23: n° del gasto de caja chica (finanzas.gasto_caja_chica.id_gasto_caja_chica, INTEGER). Solo se valida el
+ * formato: la tabla de Finanzas todavía no está en la base compartida (D86). La referencia queda "CC-<n°>".
+ */
+const esGastoCajaChica = (v) => /^[1-9]\d{0,9}$/.test(String(v ?? '').trim()) && Number(String(v).trim()) <= 2147483647;
+const referenciaCajaChica = (v) => `CC-${Number(String(v).trim())}`;
+
+/**
  * Descuenta `cantidad` de un SKU en una bodega siguiendo FIFO (lote mas antiguo
  * primero). Bloquea las filas de inventario_bodega con FOR UPDATE, de modo que
  * dos consumos simultaneos del mismo material no puedan leer el mismo stock
@@ -198,6 +219,7 @@ async function resolverBodega(client, sku, bodegaId) {
 }
 
 module.exports = {
-  tipoMovimientoId, motivoMovimientoId, motivoDevolucionConsumo,
+  tipoMovimientoId, motivoMovimientoId, motivoDevolucionConsumo, motivoCompraCajaChica,
+  esGastoCajaChica, referenciaCajaChica,
   descontarFifo, reponerFifo, insertarMovimiento, resolverBodega,
 };

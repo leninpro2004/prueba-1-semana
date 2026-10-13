@@ -1,11 +1,12 @@
 const { query } = require('../db/pool');
 const { ErrorNegocio, conTransaccion, responderError } = require('../db/tx');
-const { tipoMovimientoId, motivoDevolucionConsumo, descontarFifo, reponerFifo } = require('../db/stock');
+const { tipoMovimientoId, motivoDevolucionConsumo, motivoCompraCajaChica, esGastoCajaChica, referenciaCajaChica,
+        descontarFifo, reponerFifo } = require('../db/stock');
 const auditoria = require('./auditoriaController');
 const { generarAlertasAutomaticas } = require('./alertasController');
 
 /**
- * CU-108: reglas de integracion entre modulos (V1, docs/sprint/decisiones.md).
+ * CU-108: reglas de integracion entre modulos (V1, docs/incremento-3-4/decisiones.md).
  *
  *  - Sin tablas nuevas: una regla es un par (modulo de origen, perfil) y cada tipo
  *    de movimiento permitido es una fila de perfil_permiso que apunta al permiso
@@ -15,7 +16,7 @@ const { generarAlertasAutomaticas } = require('./alertasController');
  *    "Eliminar" borra sus filas, para corregir una regla creada por error.
  *  - El perfil de un usuario se obtiene por el NOMBRE de su rol (no por
  *    usuario.perfil_id_perfil, descuadrado con los booleanos). Ver
- *    docs/sprint/migracion-permisos.md.
+ *    docs/incremento-3-4/migracion-permisos.md.
  */
 
 const PERMISO_MODULO = 'inventario';
@@ -169,7 +170,7 @@ async function aplicarTipos(client, modulo, perfilId, tipos) {
          VALUES ($1, $2, $3, $4)
          ON CONFLICT (permiso_modulo, permiso_accion) DO NOTHING`,
         [PERMISO_MODULO, accion,
-         `CU-108: registrar ${tipo === 'entrada' ? 'entradas' : 'salidas'} de inventario desde ${MODULOS_ORIGEN[modulo]}`,
+         `Registrar ${tipo === 'entrada' ? 'entradas' : 'salidas'} de inventario desde ${MODULOS_ORIGEN[modulo]}`,
          `inv_${accion}`]
       );
       await client.query(
@@ -343,7 +344,7 @@ async function eliminarRegla(req, res) {
 
 /* ══════════════════════════════════════════════════════════════════════════
    CU-107: movimientos de inventario registrados desde otro módulo
-   Contrato para los otros grupos: docs/sprint/api-integracion.md
+   Contrato para los otros grupos: docs/incremento-3-4/api-integracion.md
    ══════════════════════════════════════════════════════════════════════════ */
 
 const MAX_TEXTO = 100;          // referencia_origen y clave_envio son VARCHAR(100)
@@ -353,7 +354,7 @@ const CANTIDAD_RE = /^\d+(\.\d{1,4})?$/;
 
 /**
  * Perfil del usuario = el de igual NOMBRE que su rol (V1). Es el único punto que
- * cambia en la migración a perfiles (docs/sprint/migracion-permisos.md): ahí pasa
+ * cambia en la migración a perfiles (docs/incremento-3-4/migracion-permisos.md): ahí pasa
  * a leer usuario.perfil_id_perfil.
  */
 async function perfilDelUsuario(client, user) {
@@ -378,7 +379,7 @@ async function reglaPermite(client, perfilId, modulo, tipo) {
 const texto = (v) => (v === undefined || v === null ? '' : String(v).trim());
 
 /** Exc 3: formato de los campos. Devuelve la lista de errores (vacía si todo está bien). */
-function erroresDeCampos(b) {
+function erroresDeCampos(b, { conGasto = false } = {}) {
   const errores = [];
   const agregar = (campo, error) => errores.push({ campo, error });
 
@@ -394,7 +395,8 @@ function erroresDeCampos(b) {
   else if (!/^\d+$/.test(bodega)) agregar('bodega_id', 'La bodega no es válida.');
 
   const ref = texto(b.referencia);
-  if (!ref) agregar('referencia', 'Indique la referencia de la operación (ej. número de obra o de nota de venta).');
+  if (conGasto) { /* F-23: la referencia es CC-<n° del gasto> */ }
+  else if (!ref) agregar('referencia', 'Indique la referencia de la operación (ej. número de obra o de nota de venta).');
   else if (ref.length > MAX_TEXTO) agregar('referencia', `La referencia no puede superar ${MAX_TEXTO} caracteres.`);
 
   const clave = texto(b.clave_envio);
@@ -449,6 +451,34 @@ function respuestaReenvio(previo, e) {
   };
 }
 
+/** Exc 3 (CU-106 y CU-107): la bodega existe y está activa. Si no, 400 con el campo. */
+async function exigirBodegaActiva(db, bodegaId) {
+  const { rows } = await db.query(
+    `SELECT bodega_estado FROM bodega WHERE bodega_id_bodega = $1`, [bodegaId]
+  );
+  if (!rows.length) throw camposInvalidos([{ campo: 'bodega_id', error: `La bodega ${bodegaId} no existe.` }]);
+  if (!['activo', 'activa'].includes(rows[0].bodega_estado)) throw camposInvalidos([{ campo: 'bodega_id', error: `La bodega ${bodegaId} no está activa.` }]);
+}
+
+/** Exc 2 (CU-106 y CU-107): el SKU existe y está activo. Si no, 404. Devuelve el material. */
+async function exigirMaterialActivo(db, sku) {
+  const { rows } = await db.query(
+    `SELECT m.material_estado AS estado, m.material_nombre_material AS nombre, um.material_unidad_medida_nombre AS unidad
+     FROM material m
+     LEFT JOIN material_unidad_medida um
+       ON um.material_unidad_medida_id_unidad_medida = m.material_unidad_medida_id_unidad_medida
+     WHERE m.material_sku = $1`, [sku]
+  );
+  if (!rows.length || rows[0].estado !== 'activo') {
+    throw new ErrorNegocio(404, {
+      error: `El producto "${sku}" no fue reconocido: ` +
+             (rows.length ? 'está inactivo en el catálogo de inventario.' : 'no existe en el catálogo de inventario.'),
+      codigo: 'SKU_NO_RECONOCIDO',
+    });
+  }
+  return rows[0];
+}
+
 /** Disponible (físico - reservado) de un SKU en una bodega. */
 async function disponibleEn(db, sku, bodegaId) {
   const { rows } = await db.query(
@@ -468,6 +498,11 @@ async function disponibleEn(db, sku, bodegaId) {
 async function devolverAlStock(client, sku, bodegaId, cantidad) {
   const lote = await reponerFifo(client, sku, bodegaId, cantidad, null);
   if (lote) return lote;
+  return loteNuevo(client, sku, bodegaId, cantidad);
+}
+
+/** Un lote nuevo (LOTE-YYYYMMDD-<id>) con `cantidad` en la bodega. */
+async function loteNuevo(client, sku, bodegaId, cantidad) {
   const { rows } = await client.query(
     `INSERT INTO lote (lote_fecha_ingreso, lote_fecha_recepcion, lote_estado)
      VALUES (now(), now(), 'activo') RETURNING lote_id_lote`
@@ -487,7 +522,9 @@ async function devolverAlStock(client, sku, bodegaId, cantidad) {
 
 /**
  * POST /api/integracion/movimientos   (cualquier usuario autenticado; lo decide la regla de CU-108)
- * Body: { modulo, tipo, sku, cantidad, bodega_id, referencia, clave_envio, descripcion? }
+ * Body: { modulo, tipo, sku, cantidad, bodega_id, referencia, clave_envio, descripcion?, gasto_caja_chica_id? }
+ * F-23 (D86): una entrada de Finanzas con `gasto_caja_chica_id` es una COMPRA por caja chica (lote nuevo, motivo
+ * compra_caja_chica, referencia CC-<n°>, que reemplaza a `referencia`); sin él sigue siendo una devolución.
  * El usuario es el del token que reenvía el módulo de origen (login común).
  *
  * Orden de validación (nada toca el stock antes de pasarlas todas):
@@ -499,11 +536,19 @@ async function registrarMovimiento(req, res) {
   const b = req.body || {};
   const modulo = texto(b.modulo).toLowerCase();
   const tipo = texto(b.tipo).toLowerCase();
+  // F-23 (D86): Finanzas informa una entrada de material comprado con caja chica con el n° del gasto
+  const gasto = texto(b.gasto_caja_chica_id);
+  const referencia = gasto ? referenciaCajaChica(gasto) : texto(b.referencia);
 
   try {
     const base = [];
     if (!MODULOS_ORIGEN[modulo]) base.push({ campo: 'modulo', error: `Módulo de origen no válido. Use: ${Object.keys(MODULOS_ORIGEN).join(', ')}.` });
     if (!TIPOS_INTEGRABLES.includes(tipo)) base.push({ campo: 'tipo', error: `Tipo de movimiento no válido. Use: ${TIPOS_INTEGRABLES.join(', ')}.` });
+    if (gasto) {
+      if (modulo !== 'finanzas') base.push({ campo: 'gasto_caja_chica_id', error: 'El n° de gasto de caja chica solo lo informa Finanzas.' });
+      else if (tipo !== 'entrada') base.push({ campo: 'gasto_caja_chica_id', error: 'El n° de gasto de caja chica solo va en una entrada.' });
+      else if (!esGastoCajaChica(gasto)) base.push({ campo: 'gasto_caja_chica_id', error: 'El n° de gasto de caja chica debe ser un número entero mayor que 0.' });
+    }
     if (base.length) throw camposInvalidos(base);
 
     const r = await conTransaccion(async (client) => {
@@ -518,11 +563,11 @@ async function registrarMovimiento(req, res) {
       }
 
       // Exc 3: formato de los campos
-      const errores = erroresDeCampos(b);
+      const errores = erroresDeCampos(b, { conGasto: !!gasto });
       if (errores.length) throw camposInvalidos(errores);
       const e = {
         tipo, sku: texto(b.sku), cantidad: Number(texto(b.cantidad).replace(',', '.')),
-        bodegaId: Number(texto(b.bodega_id)), referencia: texto(b.referencia),
+        bodegaId: Number(texto(b.bodega_id)), referencia,
         clave: texto(b.clave_envio), descripcion: texto(b.descripcion) || null,
       };
 
@@ -531,25 +576,12 @@ async function registrarMovimiento(req, res) {
       if (previo) return { reenvio: respuestaReenvio(previo, e) };
 
       // Exc 3: bodega existente y activa
-      const { rows: bod } = await client.query(
-        `SELECT bodega_estado FROM bodega WHERE bodega_id_bodega = $1`, [e.bodegaId]
-      );
-      if (!bod.length) throw camposInvalidos([{ campo: 'bodega_id', error: `La bodega ${e.bodegaId} no existe.` }]);
-      if (!['activo', 'activa'].includes(bod[0].bodega_estado)) throw camposInvalidos([{ campo: 'bodega_id', error: `La bodega ${e.bodegaId} no está activa.` }]);
+      await exigirBodegaActiva(client, e.bodegaId);
 
       // Exc 2: SKU existente y activo
-      const { rows: mat } = await client.query(
-        `SELECT material_estado FROM material WHERE material_sku = $1`, [e.sku]
-      );
-      if (!mat.length || mat[0].material_estado !== 'activo') {
-        throw new ErrorNegocio(404, {
-          error: `El producto "${e.sku}" no fue reconocido: ` +
-                 (mat.length ? 'está inactivo en el catálogo de inventario.' : 'no existe en el catálogo de inventario.'),
-          codigo: 'SKU_NO_RECONOCIDO',
-        });
-      }
+      await exigirMaterialActivo(client, e.sku);
 
-      // Exc 4 (salida) o devolución (entrada)
+      // Exc 4 (salida), compra por caja chica (entrada con gasto: lote nuevo, como una compra) o devolución (entrada)
       let loteId, motivoId = null;
       if (tipo === 'salida') {
         try {
@@ -564,6 +596,9 @@ async function registrarMovimiento(req, res) {
           }
           throw err;
         }
+      } else if (gasto) {
+        motivoId = await motivoCompraCajaChica(client);
+        loteId = await loteNuevo(client, e.sku, e.bodegaId, e.cantidad);
       } else {
         motivoId = await motivoDevolucionConsumo(client);
         loteId = await devolverAlStock(client, e.sku, e.bodegaId, e.cantidad);
@@ -608,7 +643,7 @@ async function registrarMovimiento(req, res) {
         if (previo) {
           return res.json(respuestaReenvio(previo, {
             tipo, sku: texto(b.sku), cantidad: Number(texto(b.cantidad).replace(',', '.')),
-            bodegaId: Number(texto(b.bodega_id)), referencia: texto(b.referencia), clave: texto(b.clave_envio),
+            bodegaId: Number(texto(b.bodega_id)), referencia, clave: texto(b.clave_envio),
           }));
         }
       } catch (e2) {
@@ -619,7 +654,61 @@ async function registrarMovimiento(req, res) {
   }
 }
 
+const numero = (v) => Number(parseFloat(v).toFixed(4));
+
+/**
+ * GET /api/integracion/stock?sku=&bodega_id=   (CU-106; cualquier usuario autenticado)
+ * Consulta de stock para Terreno y Finanzas, con el token del usuario (login común).
+ *
+ * Orden de validación, el mismo de CU-107:
+ *   token (authMiddleware, 401, Exc 1) → campos (400, Exc 3) → bodega existente y activa
+ *   (400, Exc 3) → SKU existente y activo (404, Exc 2).
+ * Sin bodega: todas las bodegas activas donde el producto tiene stock. Con una bodega sin
+ * stock del producto: esa bodega en 0. Solo lectura y sin montos.
+ */
+async function consultarStock(req, res) {
+  const q = req.query || {};
+  try {
+    const errores = [];
+    const sku = texto(q.sku);
+    if (!sku) errores.push({ campo: 'sku', error: 'Indique el SKU del producto.' });
+    const bodega = texto(q.bodega_id);
+    if (bodega && !/^\d+$/.test(bodega)) errores.push({ campo: 'bodega_id', error: 'La bodega no es válida.' });
+    if (errores.length) throw camposInvalidos(errores);
+    const bodegaId = bodega ? Number(bodega) : null;
+
+    if (bodegaId !== null) await exigirBodegaActiva({ query }, bodegaId);
+    const material = await exigirMaterialActivo({ query }, sku);
+
+    const { rows } = await query(
+      `SELECT b.bodega_id_bodega AS bodega_id, b.bodega_nombre_bodega AS bodega,
+              COALESCE(SUM(ib.inventario_bodega_cantidad_fisica), 0)    AS fisico,
+              COALESCE(SUM(ib.inventario_bodega_cantidad_reservada), 0) AS reservado
+       FROM bodega b
+       LEFT JOIN inventario_bodega ib ON ib.bodega_id_bodega = b.bodega_id_bodega AND ib.material_sku = $1
+       WHERE b.bodega_estado IN ('activo', 'activa') AND ($2::bigint IS NULL OR b.bodega_id_bodega = $2)
+       GROUP BY b.bodega_id_bodega, b.bodega_nombre_bodega
+       HAVING $2::bigint IS NOT NULL OR COUNT(ib.material_sku) > 0
+       ORDER BY b.bodega_id_bodega`,
+      [sku, bodegaId]
+    );
+
+    const bodegas = rows.map(r => ({
+      bodega_id: Number(r.bodega_id), bodega: r.bodega,
+      fisico: numero(r.fisico), reservado: numero(r.reservado), disponible: numero(r.fisico - r.reservado),
+    }));
+    const suma = (k) => numero(bodegas.reduce((s, b) => s + b[k], 0));
+    res.json({
+      sku, nombre: material.nombre, unidad: material.unidad,
+      bodegas,
+      total: { fisico: suma('fisico'), reservado: suma('reservado'), disponible: suma('disponible') },
+    });
+  } catch (err) {
+    responderError(res, err, 'Error consultando stock desde otro módulo:');
+  }
+}
+
 module.exports = {
-  listarReglas, crearRegla, actualizarRegla, eliminarRegla, registrarMovimiento,
+  listarReglas, crearRegla, actualizarRegla, eliminarRegla, registrarMovimiento, consultarStock,
   PERMISO_MODULO, MODULOS_ORIGEN, TIPOS_INTEGRABLES, ROL_DEL_USUARIO_SQL, accionDe,
 };

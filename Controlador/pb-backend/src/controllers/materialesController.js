@@ -2,7 +2,8 @@ const { query } = require('../db/pool');
 const { ocultaMontos } = require('../middleware/auth');
 const { ErrorNegocio, conTransaccion, responderError } = require('../db/tx');
 const auditoria = require('./auditoriaController');
-const { generarCodigoInterno } = require('../db/codigos');
+const { generarCodigoInterno, generarSku, normalizar } = require('../db/codigos');
+const { faltaFirma } = require('../middleware/firma');
 const { consultarEntregas, resumirEntregas } = require('../db/entregas');
 const { TIPOS_RETIRO } = require('./alertasController');
 
@@ -340,6 +341,66 @@ async function crear(req, res) {
 }
 
 /**
+ * POST /api/materiales/alta-rapida
+ * F-23b (D86): alta rápida de un material comprado por caja chica que no está en el catálogo.
+ * Solo nombre, unidad y descripción opcional; el SKU lo genera el sistema (mismo generador que el
+ * importador, F-03). Queda sin categoría ni clasificación ("Sin categoría" en Productos) para que
+ * gerencia lo clasifique después, y sin umbrales. Un nombre que ya existe (sin mayúsculas ni
+ * tildes) se rechaza con 409 y se informa cuál es, para no duplicar.
+ */
+async function altaRapida(req, res) {
+  const nombre = String(req.body.nombre || '').trim().replace(/\s+/g, ' ');
+  const descripcion = String(req.body.descripcion || '').trim();
+  const unidadId = parseInt(req.body.unidad_medida_id);
+
+  const faltan = [!nombre && 'nombre', !(unidadId > 0) && 'unidad de medida'].filter(Boolean);
+  if (faltan.length > 0) {
+    return res.status(400).json({ error: `Complete los campos obligatorios: ${faltan.join(', ')}.`, campos_faltantes: faltan });
+  }
+  if (nombre.length > 200) {
+    return res.status(400).json({ error: `El nombre no puede superar los 200 caracteres (tiene ${nombre.length}).` });
+  }
+
+  try {
+    const creado = await conTransaccion(async (client) => {
+      const { rows: unidad } = await client.query(
+        `SELECT 1 FROM material_unidad_medida WHERE material_unidad_medida_id_unidad_medida = $1`, [unidadId]);
+      if (unidad.length === 0) throw new ErrorNegocio(400, { error: 'La unidad de medida no existe.' });
+
+      const { rows: todos } = await client.query(
+        `SELECT material_sku AS sku, material_nombre_material AS nombre, material_estado AS estado FROM material`);
+      const existente = todos.find(m => normalizar(m.nombre) === normalizar(nombre));
+      if (existente) {
+        throw new ErrorNegocio(409, {
+          error: `Ya existe un producto con ese nombre: ${existente.sku} "${existente.nombre}"` +
+                 (existente.estado !== 'activo' ? ` (${existente.estado})` : '') + '. Selecciónelo en vez de crear otro.',
+          existente,
+        });
+      }
+
+      const sku = await generarSku(client, null, nombre);
+      await client.query(
+        `INSERT INTO material (
+           material_sku, material_nombre_material, material_descripcion,
+           material_estado, material_unidad_medida_id_unidad_medida
+         ) VALUES ($1, $2, $3, 'activo', $4)`,
+        [sku, nombre, descripcion || null, unidadId]
+      );
+      const codigo = await generarCodigoInterno(client, sku);
+      return { sku, codigo };
+    });
+    await auditoria.registrar(req.user?.id, 'Crear material',
+      `Alta rápida (caja chica): material "${nombre}" creado (SKU: ${creado.sku}), pendiente de clasificar`);
+    res.status(201).json({
+      message: `Producto ${creado.sku} creado. Queda sin categoría hasta que gerencia lo clasifique.`,
+      sku: creado.sku, nombre, codigo_barras: creado.codigo,
+    });
+  } catch (err) {
+    responderError(res, err, 'Error en el alta rápida de material:');
+  }
+}
+
+/**
  * PUT /api/materiales/:sku
  * Actualizar material (SKU no se puede cambiar)
  */
@@ -370,7 +431,9 @@ async function actualizar(req, res) {
   try {
     // CU-123: ¿el material queda como insumo especial? Lo enviado manda; si no, lo guardado.
     const { rows: actual } = await query(
-      `SELECT material_sku AS sku, material_es_rotativo AS es_rotativo, material_descripcion AS descripcion
+      `SELECT material_sku AS sku, material_es_rotativo AS es_rotativo, material_descripcion AS descripcion,
+              material_stock_minimo AS stock_minimo, material_stock_maximo AS stock_maximo,
+              material_stock_critico AS stock_critico
        FROM material WHERE material_sku ILIKE $1`,
       [sku]
     );
@@ -378,6 +441,17 @@ async function actualizar(req, res) {
     const especial = enviado('es_rotativo') && es_rotativo != null
       ? !es_rotativo
       : actual[0].es_rotativo === false;
+    // F-11: cambiar el mínimo, el máximo o el crítico pide la firma de un gerente (umbrales_stock).
+    // Se compara el valor que quedaría guardado (un especial los deja en NULL, ver el UPDATE).
+    const numero = (v) => (v == null || v === '' ? null : parseFloat(v));
+    const cambiaUmbral = ['stock_minimo', 'stock_maximo', 'stock_critico'].some((campo) => {
+      const final = especial ? null : (enviado(campo) ? numero(req.body[campo]) : numero(actual[0][campo]));
+      return final !== numero(actual[0][campo]);
+    });
+    if (cambiaUmbral) {
+      const falta = faltaFirma(req, 'umbrales_stock');
+      if (falta) return res.status(428).json(falta);
+    }
     const descripcionFinal = enviado('descripcion') ? descripcion : actual[0].descripcion;
     if (especial && !String(descripcionFinal || '').trim()) {
       return res.status(400).json({ error: MSG_DESCRIPCION_ESPECIAL, campos_faltantes: ['descripción'] });
@@ -536,10 +610,11 @@ async function vincularProveedor(req, res) {
   try {
     const r = await conTransaccion(async (client) => {
       const { rows: mat } = await client.query(
-        `SELECT material_sku FROM material WHERE material_sku ILIKE $1`, [req.params.sku]
+        `SELECT material_sku, material_nombre_material AS nombre FROM material WHERE material_sku ILIKE $1`, [req.params.sku]
       );
       if (mat.length === 0) throw new ErrorNegocio(404, { error: 'Material no encontrado' });
       const sku = mat[0].material_sku;
+      const material = mat[0].nombre;
 
       const { rows: prov } = await client.query(
         `SELECT proveedor_razon_social AS nombre FROM proveedor WHERE proveedor_id_proveedor = $1`, [proveedorId]
@@ -574,7 +649,7 @@ async function vincularProveedor(req, res) {
            VALUES ($1, $2, $3, CURRENT_DATE, 'manual', $4)`,
           [sku, proveedorId, precio, req.user?.id || null]
         );
-        return { sku, proveedor: prov[0].nombre, creado: true };
+        return { sku, material, proveedor: prov[0].nombre, creado: true };
       }
 
       // ── Relacion existente: Exc 2, se confirma antes de actualizar ──
@@ -625,15 +700,17 @@ async function vincularProveedor(req, res) {
           [sku, proveedorId, precio, req.user?.id || null]
         );
       }
-      return { sku, proveedor: prov[0].nombre, creado: false, anteriores: vigentes };
+      return { sku, material, proveedor: prov[0].nombre, creado: false, anteriores: vigentes };
     });
 
-    // Auditoria despues del COMMIT. registro_afectado es VARCHAR(100): detalle corto.
+    // Auditoria despues del COMMIT. F-07 (#14): nombres legibles y sin cortar; registrar() guarda
+    // el texto completo en `observacion` si supera el largo de registro_afectado (D59).
     const a = r.anteriores;
+    const quien = `${r.material} (${r.sku}) / ${r.proveedor}`;
     const detalle = r.creado
-      ? `SKU ${r.sku} / prov #${proveedorId}: precio ${precio}, plazo ${tiempo_reposicion}, mín ${cantidad_minima}`
-      : `SKU ${r.sku} / prov #${proveedorId}: precio ${a.precio}→${precio}, plazo ${a.tiempo_reposicion}→${tiempo_reposicion}, mín ${a.cantidad_minima}→${cantidad_minima}`;
-    await auditoria.registrar(req.user?.id, r.creado ? 'Vincular proveedor' : 'Actualizar proveedor', detalle.slice(0, 100));
+      ? `${quien}: precio ${precio}, plazo ${tiempo_reposicion} días, mín ${cantidad_minima}`
+      : `${quien}: precio ${a.precio}→${precio}, plazo ${a.tiempo_reposicion}→${tiempo_reposicion} días, mín ${a.cantidad_minima}→${cantidad_minima}`;
+    await auditoria.registrar(req.user?.id, r.creado ? 'Vincular proveedor' : 'Actualizar proveedor', detalle);
 
     res.status(r.creado ? 201 : 200).json({
       message: r.creado ? 'Proveedor vinculado correctamente.' : 'Valores del proveedor actualizados. El precio anterior quedó en el historial.',
@@ -936,10 +1013,59 @@ async function historialPrecios(req, res) {
   }
 }
 
+/** Año actual en Chile (el servidor puede estar en UTC). */
+const anioChile = () => Number(new Date().toLocaleString('en-CA', { timeZone: 'America/Santiago' }).slice(0, 4));
+
+/**
+ * F-14: GET /api/materiales/:sku/precios?agrupar=mes&anio=AAAA[&proveedor_id=][&comparar=1]
+ * El precio de cada mes es el ÚLTIMO registrado ese mes (por fecha y luego por id), de cualquier
+ * proveedor o del filtrado. Los meses sin compra van en null.
+ * → { anio, meses: [12], anterior: { anio, meses: [12] } | null }
+ */
+async function preciosPorMes(req, res) {
+  const { sku } = req.params;
+  const texto = req.query.anio == null || req.query.anio === '' ? String(anioChile()) : String(req.query.anio);
+  const anio = Number(texto);
+  if (!/^\d{4}$/.test(texto) || anio < 2000 || anio > 2100) {
+    return res.status(400).json({ error: 'El año debe tener 4 dígitos (entre 2000 y 2100).' });
+  }
+  const comparar = req.query.comparar === '1' || req.query.comparar === 'true';
+
+  try {
+    const { rows } = await query(
+      `SELECT DISTINCT ON (anio, mes)
+              EXTRACT(YEAR  FROM fecha_vigencia_desde)::int AS anio,
+              EXTRACT(MONTH FROM fecha_vigencia_desde)::int AS mes,
+              precio_unitario::float AS precio
+       FROM historial_precio_material
+       WHERE material_sku ILIKE $1
+         AND fecha_vigencia_desde >= make_date($2::int, 1, 1)
+         AND fecha_vigencia_desde <  make_date($3::int + 1, 1, 1)
+         AND ($4::bigint IS NULL OR proveedor_id_proveedor = $4::bigint)
+       ORDER BY anio, mes, fecha_vigencia_desde DESC, historial_precio_id DESC`,
+      [sku, comparar ? anio - 1 : anio, anio, req.query.proveedor_id || null]
+    );
+    const mesesDe = (a) => {
+      const meses = Array(12).fill(null);
+      for (const r of rows) if (r.anio === a) meses[r.mes - 1] = r.precio;
+      return meses;
+    };
+    res.json({
+      anio,
+      meses: mesesDe(anio),
+      anterior: comparar ? { anio: anio - 1, meses: mesesDe(anio - 1) } : null,
+    });
+  } catch (err) {
+    console.error('Error obteniendo precios por mes:', err);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+}
+
 /**
  * GET /api/materiales/:sku/precios
  * Historial de precios paginado y filtrable (SONNET-9).
  * Query params: ?desde=&hasta=&proveedor_id=&page=&limit=
+ * F-14: con ?agrupar=mes devuelve el precio por mes (preciosPorMes).
  */
 async function listarPrecios(req, res) {
   const { sku } = req.params;
@@ -953,6 +1079,7 @@ async function listarPrecios(req, res) {
     if (mat.length === 0) {
       return res.status(404).json({ error: 'Material no encontrado' });
     }
+    if (req.query.agrupar === 'mes') return preciosPorMes(req, res);
 
     // CU-64: variacion respecto del precio anterior del MISMO proveedor, calculada
     // sobre el historial completo del producto antes de filtrar y paginar.
@@ -1143,7 +1270,7 @@ async function compararProveedores(req, res) {
 }
 
 module.exports = {
-  listar, obtener, crear, actualizar, eliminar,
+  listar, obtener, crear, altaRapida, actualizar, eliminar,
   listarUnidades, listarCategorias,
   reactivar, duplicar, historialPrecios, listarPrecios, pinturasSobrantes,
   vincularProveedor, compararProveedores

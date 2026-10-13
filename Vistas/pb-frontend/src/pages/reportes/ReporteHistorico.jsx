@@ -1,5 +1,4 @@
 import { useMemo, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
 import { API } from '../../services/api';
 import { formatMoney } from '../../utils/format';
 import { exportarCSV } from '../../utils/csvExport';
@@ -9,6 +8,7 @@ import { usePageTitle } from '../../contexts/TitleContext';
 import Alert, { useAlert } from '../../components/Alert';
 import BotonExportar from '../../components/BotonExportar';
 import { LineaTemporal, descargarGrafico } from '../../components/Charts';
+import ReportesNav from '../../components/ReportesNav';
 
 /**
  * CU-75 — Evolución histórica del inventario, solo gerencia (montos en CLP).
@@ -159,14 +159,13 @@ export default function ReporteHistorico() {
 
   return (
     <>
+      <ReportesNav />
       <div className="page-header">
         <div>
           <div className="page-title">Histórico de inventario</div>
           <div className="page-subtitle">Evolución del valor del inventario al cierre de cada período, por categoría, en CLP</div>
         </div>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          <Link to="/reportes/movimientos" className="btn btn-ghost">← Reportes</Link>
-          <Link to="/reportes/valorizacion" className="btn btn-ghost">Valorización actual</Link>
           {esGerencia && (
             <>
               <BotonExportar onClick={exportar} filas={res == null ? null : (vista?.periodos.length ?? 0)} />

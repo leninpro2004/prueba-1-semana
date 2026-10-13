@@ -5,7 +5,7 @@ import { exportarCSV } from '../../utils/csvExport';
 import { usePageTitle } from '../../contexts/TitleContext';
 import { usePrompt } from '../../hooks/useDialog';
 import PinturaSobrantes from './PinturaSobrantes';
-import Alert, { useAlert } from '../../components/Alert';
+import Alert, { useAlert, AvisoCerrable } from '../../components/Alert';
 import Pagination, { EmptyRow } from '../../components/Pagination';
 import BotonExportar from '../../components/BotonExportar';
 import { usePagination } from '../../hooks/usePagination';
@@ -678,10 +678,10 @@ export default function PinturaSeguimiento() {
           </div>
 
           {reporte?.resumen?.retiros_abiertos > 0 && (
-            <div className="alert alert-warning" style={{ marginBottom: 16, fontSize: 13 }}>
+            <AvisoCerrable className="alert alert-warning" style={{ marginBottom: 16, fontSize: 13 }}>
               ⚠ {reporte.resumen.retiros_abiertos} envase(s) del período siguen sin devolver, así que su consumo
               todavía no está medido y no entra en estos totales.
-            </div>
+            </AvisoCerrable>
           )}
 
           <div className="card">

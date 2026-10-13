@@ -44,10 +44,13 @@ export default function MovimientoEntrada() {
   // D66: compra (proveedor, precio, pedido y factura obligatorios) o devolución de obra
   const [tipoEntrada, setTipoEntrada] = useState('compra');
   const [descripcion, setDescripcion] = useState('');
+  // F-23 (D86): compra por caja chica: el n° del gasto de Finanzas en vez de proveedor, precio y factura
+  const [gastoCajaChica, setGastoCajaChica] = useState('');
   // D57: proveedores asociados al SKU (null = aún no se elige producto) y el recurso "mostrar todos"
   const [provsSku, setProvsSku] = useState(null);
   const [mostrarTodos, setMostrarTodos] = useState(false);
   const esCompra = tipoEntrada === 'compra';
+  const esCajaChica = tipoEntrada === 'caja_chica';
   const [errStyles, setErrStyles] = useState({});
   const [saving, setSaving] = useState(false);
   const [preview, setPreview] = useState(null); // null | 'error' | { total, min, unidad }
@@ -62,6 +65,9 @@ export default function MovimientoEntrada() {
   };
   // CU-124: recepción de un insumo especial pendiente de vincular a sus ventas
   const [recepcion, setRecepcion] = useState(null);
+  // F-23b: alta rápida de un material de caja chica que no está en el catálogo
+  const [alta, setAlta] = useState(null);   // null = cerrado | { nombre, unidad, descripcion, error, guardando }
+  const [unidades, setUnidades] = useState(null);
 
   // OPUS-5: al elegir bodega se cargan sus anaqueles (GET /api/bodegas/:id ya los trae)
   useEffect(() => {
@@ -122,6 +128,38 @@ export default function MovimientoEntrada() {
     }
   };
 
+  // F-23b: abre el alta rápida; las unidades se cargan la primera vez
+  const abrirAlta = async () => {
+    setAlta({ nombre: '', unidad: '', descripcion: '', error: '', guardando: false });
+    if (unidades) return;
+    try { setUnidades(await API.materiales.unidades() || []); }
+    catch { setUnidades([]); }
+  };
+
+  const crearAlta = async () => {
+    if (!alta.nombre.trim() || !alta.unidad) {
+      setAlta(a => ({ ...a, error: 'Ingrese el nombre y la unidad de medida.' }));
+      return;
+    }
+    setAlta(a => ({ ...a, error: '', guardando: true }));
+    try {
+      const r = await API.materiales.altaRapida({
+        nombre: alta.nombre.trim(), unidad_medida_id: Number(alta.unidad), descripcion: alta.descripcion.trim(),
+      });
+      // apiFetch devuelve el cuerpo de un 409 (no lanza): ya existe un producto con ese nombre
+      if (!r?.sku) {
+        setAlta(a => ({ ...a, error: r?.error || 'No se pudo crear el producto.', existente: r?.existente || null, guardando: false }));
+        return;
+      }
+      setMateriales(await API.materiales.listar({ estado: 'activo' }) || []);
+      setAlta(null);
+      onSkuChange(r.sku);
+      showAlert('success', r.message || `Producto ${r.sku} creado.`);
+    } catch (err) {
+      setAlta(a => ({ ...a, error: err.message, guardando: false }));
+    }
+  };
+
   // CU-30: producto leído por escáner → autocompleta producto y bodega, cursor en cantidad
   const onProductoEscaneado = (p) => {
     onSkuChange(p.sku);
@@ -158,7 +196,8 @@ export default function MovimientoEntrada() {
     else if (esCompra && !(parseFloat(precioUnitario) > 0)) { errs.precio = ERR_BORDER; errE = 'Ingrese el precio unitario de compra (mayor que 0).'; }
     else if (esCompra && !fechaPedido) { errs.fechaPedido = ERR_BORDER; errE = 'Ingrese la fecha del pedido al proveedor.'; }
     else if (esCompra && (!facturaNumero.trim() || !facturaFecha)) { errs.facturaNumero = ERR_BORDER; errs.facturaFecha = ERR_BORDER; errE = 'Ingrese el número y la fecha de emisión de la factura.'; }
-    else if (!esCompra && !descripcion.trim()) { errs.descripcion = ERR_FULL; errE = 'Indique de qué obra o venta vuelve el material.'; }
+    else if (esCajaChica && !/^[1-9]\d{0,9}$/.test(gastoCajaChica.trim())) { errs.gasto = ERR_BORDER; errE = 'Ingrese el n° del gasto de caja chica (lo entrega Finanzas).'; }
+    else if (tipoEntrada === 'devolucion' && !descripcion.trim()) { errs.descripcion = ERR_FULL; errE = 'Indique de qué obra o venta vuelve el material.'; }
     else if (!tipoEntradaId)           { errE = 'No se encontró tipo de movimiento "entrada". Verifica la BD.'; }
     setErrStyles(errs);
     if (errE) { showAlert('danger', errE); return; }
@@ -191,6 +230,9 @@ export default function MovimientoEntrada() {
           precio_unitario:  parseFloat(precioUnitario),
           // CU-62: fecha del pedido (y recepción, abajo)
           fecha_pedido:     fechaPedido,
+        } : esCajaChica ? {
+          gasto_caja_chica_id: Number(gastoCajaChica.trim()),
+          descripcion_motivo:  descripcion.trim(),   // comercio (opcional): no es un proveedor
         } : { descripcion_motivo: descripcion.trim() }),
         ...(fecha && { fecha_recepcion: fecha }),
         // OPUS-5: anaquel destino dentro de la bodega
@@ -198,7 +240,9 @@ export default function MovimientoEntrada() {
       });
       // Un 409 (factura ya registrada) llega como datos, no como excepción
       if (r?.error) { showAlert('danger', r.error); setSaving(false); return; }
-      showAlert('success', esCompra ? 'Entrada registrada correctamente. El stock ha sido actualizado.' : 'Devolución de obra registrada: el stock volvió a la bodega y se descontó del consumo.');
+      showAlert('success', esCompra ? 'Entrada registrada correctamente. El stock ha sido actualizado.'
+        : esCajaChica ? `Compra por caja chica registrada (gasto CC-${Number(gastoCajaChica.trim())}). El stock ha sido actualizado.`
+        : 'Devolución de obra registrada: el stock volvió a la bodega y se descontó del consumo.');
       // CU-124: un insumo especial se vincula a su venta antes de volver al historial
       if (r?.insumo_especial) { setRecepcion(r.insumo_especial); return; }
       setTimeout(() => navigate('/movimientos/historial'), 1500);
@@ -213,12 +257,69 @@ export default function MovimientoEntrada() {
       <div className="page-header">
         <div>
           <div className="page-title">Registrar Entrada</div>
-          <div className="page-subtitle">Ingreso de stock al inventario (FR-18, FR-22)</div>
+          <div className="page-subtitle">Ingreso de stock al inventario</div>
         </div>
         <Link to="/movimientos/historial" className="btn btn-secondary">← Volver al historial</Link>
       </div>
 
       <div id="alert-container"><Alert {...alert} /></div>
+
+      {/* F-23b: alta rápida de un material de caja chica */}
+      {alta && (
+        <div className="modal-backdrop" id="modal-alta-rapida" style={{ display: 'flex' }}
+          onClick={e => { if (e.target === e.currentTarget && !alta.guardando) setAlta(null); }}>
+          <div className="modal" style={{ maxWidth: 460 }}>
+            <div className="modal-header">
+              <div>
+                <div className="modal-title">Nuevo producto (caja chica)</div>
+                <div className="modal-subtitle">El SKU lo genera el sistema. Queda sin categoría hasta que gerencia lo clasifique en Productos.</div>
+              </div>
+              <button className="modal-close" onClick={() => setAlta(null)} disabled={alta.guardando} aria-label="Cerrar">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="18" height="18"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+              </button>
+            </div>
+            <div className="modal-body">
+              {alta.error && (
+                <div className="alert alert-danger" style={{ marginBottom: 12 }}>
+                  {alta.error}
+                  {alta.existente?.estado === 'activo' && (
+                    <div style={{ marginTop: 8 }}>
+                      <button type="button" className="btn btn-secondary btn-sm" id="usar-existente"
+                        onClick={() => { const e = alta.existente; setAlta(null); onSkuChange(e.sku); }}>
+                        Seleccionar {alta.existente.sku}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+              <div className="form-group">
+                <label className="form-label" htmlFor="alta-nombre">Nombre <span className="required">*</span></label>
+                <input className="form-control" id="alta-nombre" maxLength={200} autoFocus placeholder="Ej: Guantes de cabritilla talla L"
+                  value={alta.nombre} onChange={e => setAlta(a => ({ ...a, nombre: e.target.value }))} />
+              </div>
+              <div className="form-group">
+                <label className="form-label" htmlFor="alta-unidad">Unidad de medida <span className="required">*</span></label>
+                <select className="form-control" id="alta-unidad" value={alta.unidad} disabled={unidades === null}
+                  onChange={e => setAlta(a => ({ ...a, unidad: e.target.value }))}>
+                  <option value="">{unidades === null ? 'Cargando unidades...' : 'Seleccionar unidad...'}</option>
+                  {(unidades || []).map(u => <option key={u.id} value={u.id}>{u.nombre}</option>)}
+                </select>
+              </div>
+              <div className="form-group">
+                <label className="form-label" htmlFor="alta-descripcion">Descripción</label>
+                <input className="form-control" id="alta-descripcion" placeholder="Opcional: marca, medida, dónde se compró"
+                  value={alta.descripcion} onChange={e => setAlta(a => ({ ...a, descripcion: e.target.value }))} />
+              </div>
+            </div>
+            <div className="modal-footer">
+              <button type="button" className="btn btn-ghost" onClick={() => setAlta(null)} disabled={alta.guardando}>Cancelar</button>
+              <button type="button" className="btn btn-primary" id="confirm-alta-rapida" onClick={crearAlta} disabled={alta.guardando}>
+                {alta.guardando ? 'Creando...' : 'Crear y seleccionar'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {recepcion && (
         <ModalVincularInsumo
@@ -245,6 +346,7 @@ export default function MovimientoEntrada() {
               <select className="form-control" id="tipo-entrada" value={tipoEntrada} onChange={e => setTipoEntrada(e.target.value)}>
                 <option value="compra">Compra a proveedor</option>
                 <option value="devolucion">Devolución de obra (vuelve material despachado o consumido)</option>
+                <option value="caja_chica">Compra por caja chica (gasto registrado en Finanzas)</option>
               </select>
             </div>
             <div className="form-row">
@@ -253,6 +355,15 @@ export default function MovimientoEntrada() {
                 {/* Sesión 15 (punto 22): búsqueda por SKU o nombre */}
                 <SelectorProducto id="sku" opciones={materiales || []} value={sku} onChange={onSkuChange} style={errStyles.sku}
                   disabled={materiales === null} placeholder={materiales === null ? 'Cargando productos...' : undefined} />
+                {esCajaChica && (
+                  <div className="form-hint">
+                    ¿No está en el catálogo?{' '}
+                    <button type="button" id="btn-alta-rapida" onClick={abrirAlta}
+                      style={{ background: 'none', border: 'none', padding: 0, color: 'var(--orange-text)', fontWeight: 600, cursor: 'pointer', fontSize: 'inherit' }}>
+                      Crearlo aquí
+                    </button>
+                  </div>
+                )}
               </div>
               <div className="form-group">
                 <label className="form-label" htmlFor="bodega">Bodega de destino <span className="required">*</span></label>
@@ -296,7 +407,7 @@ export default function MovimientoEntrada() {
 
           {esCompra ? (
           <div className="card" style={{ marginBottom: 16 }}>
-            <div className="section-label">Proveedor (FR-22)</div>
+            <div className="section-label">Proveedor</div>
             <div className="form-row">
               <div className="form-group">
                 <label className="form-label" htmlFor="proveedor" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -355,9 +466,31 @@ export default function MovimientoEntrada() {
             </div>
           </div>
 
+          ) : esCajaChica ? (
+          <div className="card" style={{ marginBottom: 16 }} id="card-caja-chica">
+            <div className="section-label">Compra por caja chica</div>
+            <div className="form-row">
+              <div className="form-group">
+                <label className="form-label" htmlFor="gasto-caja-chica">N° del gasto de caja chica <span className="required">*</span></label>
+                <input className="form-control" id="gasto-caja-chica" inputMode="numeric" placeholder="Ej: 125" value={gastoCajaChica}
+                  onChange={e => setGastoCajaChica(e.target.value)} style={errStyles.gasto} />
+                <div className="form-hint">El número con que Finanzas registró el gasto. Queda como referencia CC-n°.</div>
+              </div>
+              <div className="form-group">
+                <label className="form-label" htmlFor="descripcion-caja-chica">Comercio o detalle</label>
+                <input className="form-control" id="descripcion-caja-chica" maxLength={255} value={descripcion}
+                  onChange={e => setDescripcion(e.target.value)} placeholder="Ej: Ferretería San Pedro" />
+                <div className="form-hint">Opcional. El comercio no se registra como proveedor.</div>
+              </div>
+            </div>
+            <div className="form-hint">
+              No lleva proveedor, precio ni factura: el monto queda en el gasto de Finanzas. Entra como un lote nuevo,
+              igual que una compra. Si lo comprado no está en el catálogo, créelo primero en Productos.
+            </div>
+          </div>
           ) : (
           <div className="card" style={{ marginBottom: 16 }} id="card-devolucion">
-            <div className="section-label">Devolución de obra (D66)</div>
+            <div className="section-label">Devolución de obra</div>
             <div className="form-group">
               <label className="form-label" htmlFor="descripcion-devolucion">¿De qué obra o venta vuelve? <span className="required">*</span></label>
               <textarea className="form-control" id="descripcion-devolucion" rows={2} maxLength={255} value={descripcion}
@@ -395,7 +528,7 @@ export default function MovimientoEntrada() {
         {/* Sidebar informativo */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
           <div className="card">
-            <div className="section-label">Método FIFO (FR — CU-37)</div>
+            <div className="section-label">Método FIFO</div>
             <p style={{ fontSize: 13, color: 'var(--gray)', lineHeight: 1.7 }}>
               Este ingreso creará un nuevo lote con fecha y precio de compra. Al registrar salidas, el sistema descontará primero los lotes más antiguos automáticamente.
             </p>

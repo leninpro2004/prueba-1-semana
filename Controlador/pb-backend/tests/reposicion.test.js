@@ -296,7 +296,7 @@ describe('Evaluación de cobertura (CU-47)', () => {
   test('gerencia y jop pueden evaluar; otros roles no', async () => {
     assert.equal((await evaluar('jop')).status, 200);
 
-    const tecnico = jwt.sign({ id: 2, username: 'jop.test', nombre: 'X', rol: 'tecnico' },
+    const tecnico = jwt.sign({ id: 3, username: 'tecnico.test', nombre: 'X', rol: 'tecnico' },
       process.env.JWT_SECRET, { expiresIn: '1h' });
     const { levantar } = require('./helpers/api');
     const res = await fetch(await levantar() + '/api/alertas/reposicion/evaluar', {
@@ -400,7 +400,7 @@ describe('Panel de reposición (CU-48)', () => {
     assert.equal(r.status, 200);
     assert.deepEqual(r.body, []);
 
-    const tecnico = jwt.sign({ id: 2, username: 'jop.test', nombre: 'X', rol: 'tecnico' },
+    const tecnico = jwt.sign({ id: 3, username: 'tecnico.test', nombre: 'X', rol: 'tecnico' },
       process.env.JWT_SECRET, { expiresIn: '1h' });
     const { levantar } = require('./helpers/api');
     const res = await fetch(await levantar() + '/api/alertas/reposicion', { headers: { Authorization: `Bearer ${tecnico}` } });

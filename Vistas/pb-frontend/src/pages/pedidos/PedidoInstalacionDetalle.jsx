@@ -6,7 +6,7 @@ import { useConfirm, usePrompt } from '../../hooks/useDialog';
 import { useAuth } from '../../hooks/useAuth';
 import Alert, { useAlert } from '../../components/Alert';
 import { formatQty } from '../../utils/format';
-import { estadoDespacho, fechaCorta, fechaHora, ventaCancelada } from './formatoInstalacion';
+import { estadoDespacho, fechaCorta, fechaHora, medidasTexto, ventaCancelada } from './formatoInstalacion';
 import RetiroInsumos from './RetiroInsumos';
 import CargaTransporte from './CargaTransporte';
 import SalidaTransporte from './SalidaTransporte';
@@ -272,6 +272,32 @@ export default function PedidoInstalacionDetalle() {
           : 'La venta fue cancelada: devuelva a bodega lo retirado y vuelva el pedido a "Vinculado"; después gerencia puede cancelarlo y liberar sus reservas.'} />
       )}
 
+      {/* F-12: lo que se pidió va primero, con sus medidas */}
+      <div className="card" id="items-venta" style={{ marginBottom: 16 }}>
+        <div className="section-label">Ítems de la venta</div>
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr><th style={{ textAlign: 'right' }}>Cantidad</th><th>Descripción</th><th>Medidas (alto × ancho × espesor)</th><th>Receta</th><th /></tr>
+            </thead>
+            <tbody>
+              {d.items.map(i => (
+                <tr key={i.id}>
+                  <td style={{ textAlign: 'right' }}>{formatQty(i.cantidad)}</td>
+                  <td>
+                    {i.descripcion}
+                    {i.observacion && <div style={{ fontSize: 12, color: 'var(--gray)' }}>{i.observacion}</div>}
+                  </td>
+                  <td>{medidasTexto(i)}</td>
+                  <td>{i.receta ? <code>{i.receta}</code> : i.sku ? <span style={{ color: 'var(--gray)' }}>material suelto (reservas de venta)</span> : '—'}</td>
+                  <td>{i.requiere_instalacion && <span className="badge badge-info" style={{ fontSize: 10 }}>instalación</span>}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 16, marginBottom: 16 }}>
         <div className="card">
           <div className="section-label">Despacho</div>
@@ -321,19 +347,6 @@ export default function PedidoInstalacionDetalle() {
             </div>
           ) : <div style={{ fontSize: 13, color: 'var(--gray)' }}>Todavía no se vinculan insumos.</div>}
         </div>
-        <div className="card">
-          <div className="section-label">Ítems de la venta</div>
-          <ul style={{ margin: '6px 0 0', paddingLeft: 18, fontSize: 13 }}>
-            {d.items.map(i => (
-              <li key={i.id}>
-                {formatQty(i.cantidad)} × {i.descripcion}
-                {i.receta && <> · <code>{i.receta}</code></>}
-                {i.requiere_instalacion && <span className="badge badge-info" style={{ marginLeft: 6, fontSize: 10 }}>instalación</span>}
-                {i.sku && <span style={{ color: 'var(--gray)' }}> · material suelto (reservas de venta, CU-131)</span>}
-              </li>
-            ))}
-          </ul>
-        </div>
       </div>
 
       <div className="card" id="insumos-instalacion">
@@ -370,9 +383,13 @@ export default function PedidoInstalacionDetalle() {
                 const cant = num(f.cantidad);
                 const valido = CANTIDAD_OK.test(String(f.cantidad).trim()) && cant > 0;
                 const max = alcanza(f);
+                // En edición manda lo que falta HOY en lo ya vinculado; lo previsto al guardar va como nota
+                const guardada = d.detalle.find(x => x.sku === f.sku);
+                const faltaHoy = editable && guardada ? Math.max(0, guardada.requerida - guardada.reservado) : 0;
+                const previsto = valido && max != null ? Math.max(0, cant - max) : null;
                 const faltante = despachado ? 0
                   : !editable ? Math.max(0, cant - f.reservado)
-                  : valido && max != null ? Math.max(0, cant - max) : null;
+                  : faltaHoy > 1e-9 ? faltaHoy : previsto;
                 // D58: en edición, el reparto previsto; guardado, dónde quedó reservado
                 const partes = editable
                   ? (valido ? reparto(f, cant) : [])
@@ -427,6 +444,11 @@ export default function PedidoInstalacionDetalle() {
                       {faltante == null ? '—' : faltante > 1e-9
                         ? <span className="badge badge-danger">{formatQty(faltante)}</span>
                         : <span className="badge badge-success">0</span>}
+                      {faltaHoy > 1e-9 && previsto != null && (
+                        <div style={{ fontSize: 11, color: 'var(--gray)' }}>
+                          {previsto > 1e-9 ? `al guardar: ${formatQty(previsto)}` : 'se cubre al guardar'}
+                        </div>
+                      )}
                     </td>
                     {editable && (
                       <td><button type="button" className="btn btn-ghost btn-sm" title="Quitar del pedido (libera lo reservado)"

@@ -1,5 +1,4 @@
 import { useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
 import { API } from '../../services/api';
 import { formatQty } from '../../utils/format';
 import { exportarCSV } from '../../utils/csvExport';
@@ -9,6 +8,7 @@ import Alert, { useAlert } from '../../components/Alert';
 import Pagination, { EmptyRow } from '../../components/Pagination';
 import BotonExportar from '../../components/BotonExportar';
 import { usePagination } from '../../hooks/usePagination';
+import ReportesNav from '../../components/ReportesNav';
 
 /**
  * CU-71 — Índice de rotación por producto (gerencia y jop).
@@ -144,14 +144,13 @@ export default function ReporteRotacion() {
 
   return (
     <>
+      <ReportesNav />
       <div className="page-header">
         <div>
           <div className="page-title">Índice de rotación</div>
           <div className="page-subtitle">Frecuencia de uso de cada producto en el período, para detectar stock que no se mueve</div>
         </div>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          <Link to="/reportes/movimientos" className="btn btn-ghost">← Reportes</Link>
-          <Link to="/reportes/consumo-area" className="btn btn-ghost">Consumo por área</Link>
           <BotonExportar onClick={exportar} filas={res ? filasExportables.length : null} />
           <BotonExportar onClick={exportarPdf} cargando={generandoPdf} filas={res ? filasExportables.length : null}
                          etiqueta="Exportar PDF" />

@@ -3,9 +3,11 @@ import { API } from '../../services/api';
 import { formatMoney } from '../../utils/format';
 import { exportarCSV } from '../../utils/csvExport';
 import BotonExportar from '../../components/BotonExportar';
-import { EmptyRow } from '../../components/Pagination';
+import Pagination, { EmptyRow } from '../../components/Pagination';
+import { usePagination } from '../../hooks/usePagination';
 import { overlayStyle, boxStyle, titleStyle, cancelBtnStyle, okBtnStyle } from '../../components/ConfirmDialog';
 import SelectorProducto from '../../components/SelectorProducto';
+import { AvisoCerrable } from '../../components/Alert';
 
 /**
  * Pestañas de gestión de herramientas — OPUS-13 (Req #5, completo).
@@ -23,6 +25,14 @@ function etiquetasEmpleados(empleados) {
 
 const fmtFecha = (f) => (f ? new Date(f).toLocaleString('sv-SE').slice(0, 16) : '—');
 
+// F-15: totales por estado, en plural como el filtro
+const TOTALES_ESTADO = [
+  ['asignada', 'Vigentes'],
+  ['devuelta', 'Devueltas'],
+  ['perdida', 'Perdidas'],
+  ['dada_de_baja', 'Dadas de baja'],
+];
+
 const ESTADO_CIERRE = [
   ['devuelta', 'Devuelta'],
   ['perdida', 'Perdida'],
@@ -34,6 +44,10 @@ export function TabAsignaciones({ herramientas, catalogo, avisar, onCambio }) {
   const [datos, setDatos] = useState(null);
   const [fSku, setFSku] = useState('');
   const [fEstado, setFEstado] = useState('asignada');
+  // F-15: herramientas por trabajador y por período
+  const [fEmpleado, setFEmpleado] = useState('');
+  const [fDesde, setFDesde] = useState('');
+  const [fHasta, setFHasta] = useState('');
 
   // Formulario de asignación
   const [sku, setSku] = useState('');
@@ -45,12 +59,15 @@ export function TabAsignaciones({ herramientas, catalogo, avisar, onCambio }) {
 
   const cargar = useCallback(async () => {
     try {
-      setDatos(await API.herramientas.asignaciones({ sku: fSku || null, estado: fEstado || 'todos' }));
+      setDatos(await API.herramientas.asignaciones({
+        sku: fSku || null, estado: fEstado || 'todos',
+        empleado_rut: fEmpleado || null, desde: fDesde || null, hasta: fHasta || null,
+      }));
     } catch (err) {
       avisar('danger', 'Error cargando asignaciones: ' + err.message);
       setDatos({ resumen: {}, asignaciones: [] });
     }
-  }, [fSku, fEstado, avisar]);
+  }, [fSku, fEstado, fEmpleado, fDesde, fHasta, avisar]);
 
   useEffect(() => { cargar(); }, [cargar]);
 
@@ -109,8 +126,11 @@ export function TabAsignaciones({ herramientas, catalogo, avisar, onCambio }) {
   };
 
   const lista = datos?.asignaciones || [];
+  const pag = usePagination(datos?.asignaciones ?? null, 20);   // B-10 (el CSV exporta todas)
   const resumen = datos?.resumen || {};
   const etiquetaEmpleado = etiquetasEmpleados(catalogo.empleados || []);
+  const empleadoFiltro = (catalogo.empleados || []).find(e => e.rut === fEmpleado);
+  const porEstado = resumen.por_estado;
 
   // CU-76: la tabla de asignaciones con los filtros aplicados
   const exportar = () => {
@@ -214,12 +234,37 @@ export function TabAsignaciones({ herramientas, catalogo, avisar, onCambio }) {
               <option value="todos">Todas</option>
             </select>
           </div>
-          <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginLeft: 'auto' }}>
-            {resumen.unidades_asignadas != null && <>Unidades entregadas ahora: <strong>{resumen.unidades_asignadas}</strong></>}
+          <div>
+            <label className="form-label" style={{ marginBottom: 4 }}>Empleado</label>
+            <select className="form-control" id="fasig-empleado" style={{ width: 'auto' }} value={fEmpleado} onChange={e => setFEmpleado(e.target.value)}>
+              <option value="">Todos</option>
+              {(catalogo.empleados || []).map(e => <option key={e.rut} value={e.rut}>{etiquetaEmpleado(e)}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="form-label" style={{ marginBottom: 4 }} htmlFor="fasig-desde">Desde</label>
+            <input className="form-control" type="date" id="fasig-desde" value={fDesde} onChange={e => setFDesde(e.target.value)} />
+          </div>
+          <div>
+            <label className="form-label" style={{ marginBottom: 4 }} htmlFor="fasig-hasta">Hasta</label>
+            <input className="form-control" type="date" id="fasig-hasta" value={fHasta} onChange={e => setFHasta(e.target.value)} />
           </div>
           <BotonExportar id="btn-exportar-asig" className="btn btn-secondary btn-sm" onClick={exportar}
                          filas={datos ? lista.length : null} etiqueta="Exportar asignaciones" />
         </div>
+        {/* F-15: totales por estado con los filtros, sin el de estado */}
+        {porEstado && (
+          <div id="asig-totales" style={{ display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'baseline', fontSize: 13, marginTop: 12 }}>
+            <strong>{empleadoFiltro ? `Asignaciones de ${etiquetaEmpleado(empleadoFiltro)}` : 'Todas las asignaciones'}</strong>
+            {TOTALES_ESTADO.map(([clave, texto]) => (
+              <span key={clave}>
+                {texto}: <strong>{porEstado[clave]?.asignaciones ?? 0}</strong>
+                <span style={{ color: 'var(--text-secondary)' }}> ({porEstado[clave]?.unidades ?? 0} unid.)</span>
+              </span>
+            ))}
+            {(fDesde || fHasta) && <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>Vigentes en algún momento del período elegido</span>}
+          </div>
+        )}
       </div>
 
       <div className="card">
@@ -238,7 +283,7 @@ export function TabAsignaciones({ herramientas, catalogo, avisar, onCambio }) {
               {datos && lista.length === 0 && (
                 <EmptyRow colSpan={9} emptyMsg="No hay asignaciones con estos filtros." />
               )}
-              {datos && lista.map(a => (
+              {datos && pag.items.map(a => (
                 <tr key={a.id}>
                   <td><span className="td-mono" style={{ fontSize: 11 }}>{a.id}</span></td>
                   <td>
@@ -265,6 +310,7 @@ export function TabAsignaciones({ herramientas, catalogo, avisar, onCambio }) {
             </tbody>
           </table>
         </div>
+        <Pagination {...pag} />
       </div>
     </div>
   );
@@ -359,13 +405,13 @@ export function TabDepreciacion({ avisar, puedeEditar }) {
       </div>
 
       {(resumen.sin_depreciacion > 0 || resumen.sin_valor > 0) && (
-        <div className="alert alert-warning" style={{ marginBottom: 16, fontSize: 13 }}>
+        <AvisoCerrable className="alert alert-warning" style={{ marginBottom: 16, fontSize: 13 }}>
           ⚠ Valorización contable parcial:
           {resumen.sin_valor > 0 && ` ${resumen.sin_valor} herramienta(s) sin valor de adquisición`}
           {resumen.sin_valor > 0 && resumen.sin_depreciacion > 0 && ' y'}
           {resumen.sin_depreciacion > 0 && ` ${resumen.sin_depreciacion} sin depreciación configurada`}
           . Esas no suman a los totales.
-        </div>
+        </AvisoCerrable>
       )}
 
       <div className="card" style={{ marginBottom: 16 }}>
@@ -532,6 +578,7 @@ export function TabMantenimiento({ herramientas, avisar }) {
   };
 
   const lista = datos?.mantenimientos || [];
+  const pag = usePagination(datos?.mantenimientos ?? null, 20);   // B-10 (el CSV exporta todos)
   const resumen = datos?.resumen || {};
 
   // CU-76: la tabla de mantenimientos con los filtros aplicados
@@ -584,10 +631,10 @@ export function TabMantenimiento({ herramientas, avisar }) {
       </div>
 
       {resumen.vencidos > 0 && !soloVencidos && (
-        <div className="alert alert-warning" style={{ marginBottom: 16, fontSize: 13 }}>
+        <AvisoCerrable className="alert alert-warning" style={{ marginBottom: 16, fontSize: 13 }}>
           ⚠ {resumen.vencidos} herramienta(s) tienen el próximo mantenimiento vencido.{' '}
           <button className="btn btn-ghost btn-sm" style={{ padding: '0 6px' }} onClick={() => setSoloVencidos(true)}>Ver solo esos</button>
-        </div>
+        </AvisoCerrable>
       )}
 
       <div className="card card-sm" style={{ marginBottom: 16 }}>
@@ -634,7 +681,7 @@ export function TabMantenimiento({ herramientas, avisar }) {
               {datos && lista.length === 0 && (
                 <EmptyRow colSpan={7} emptyMsg="No hay mantenimientos registrados con estos filtros." />
               )}
-              {datos && lista.map(m => (
+              {datos && pag.items.map(m => (
                 <tr key={m.id} style={m.vencido ? { background: 'rgba(255,193,7,0.12)' } : undefined}>
                   <td style={{ fontSize: 12, color: 'var(--gray)', whiteSpace: 'nowrap' }}>{fmtFecha(m.fecha_mantenimiento)}</td>
                   <td>
@@ -654,6 +701,7 @@ export function TabMantenimiento({ herramientas, avisar }) {
             </tbody>
           </table>
         </div>
+        <Pagination {...pag} />
       </div>
     </div>
   );

@@ -3,8 +3,8 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { API } from '../../services/api';
 import { usePrompt } from '../../hooks/useDialog';
 import { usePageTitle } from '../../contexts/TitleContext';
-import { fechaLocal } from '../../utils/format';
-import Alert, { useAlert } from '../../components/Alert';
+import { fechaLocal, formatQty } from '../../utils/format';
+import Alert, { useAlert, AvisoCerrable } from '../../components/Alert';
 import Pagination, { EmptyRow } from '../../components/Pagination';
 
 const INSUMO_INFO = {
@@ -34,7 +34,7 @@ const POR_PAGINA = 20;
 
 /** Validación de Pedidos — conversión 1:1 de pedidos/checklist.html. ?id=X abre el checklist de esa orden. */
 export default function PedidoChecklist() {
-  usePageTitle('Pedidos');
+  usePageTitle('Checklist de OT');
   const prompt = usePrompt();
   const { alert, showAlert } = useAlert();
   const [params] = useSearchParams();
@@ -159,8 +159,8 @@ export default function PedidoChecklist() {
     <>
       <div className="page-header">
         <div>
-          <div className="page-title">Validación de Pedidos</div>
-          <div className="page-subtitle">Lista de chequeo de insumos por orden de trabajo — FR-74</div>
+          <div className="page-title">Checklist de OT</div>
+          <div className="page-subtitle">Lista de chequeo de insumos por orden de trabajo</div>
         </div>
       </div>
 
@@ -178,8 +178,9 @@ export default function PedidoChecklist() {
               <select className="form-control" id="filter-estado-ot" style={{ width: 180 }} value={estado} onChange={e => setEstado(e.target.value)}>
                 <option value="">Todos los estados</option>
                 <option value="pendiente">Pendiente</option>
-                <option value="en_proceso">En proceso</option>
-                <option value="completado">Completado</option>
+                <option value="en_curso">En curso</option>
+                <option value="finalizada">Finalizada</option>
+                <option value="cancelada">Cancelada</option>
               </select>
             </div>
             <div className="table-wrap">
@@ -233,7 +234,7 @@ export default function PedidoChecklist() {
         <div id="vista-detalle">
           <button className="btn btn-ghost" style={{ marginBottom: 16 }} onClick={volverLista}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" width="14" height="14"><polyline points="15 18 9 12 15 6"/></svg>
-            Volver a pedidos
+            Volver al checklist
           </button>
 
           <div className="card">
@@ -259,10 +260,10 @@ export default function PedidoChecklist() {
             <div id="checklist-items">
               {materiales.length === 0 && <div className="empty-state"><p>Esta orden no tiene materiales asignados.</p></div>}
               {materiales.length > 0 && criticosFaltantes.length > 0 && (
-                <div className="alert alert-danger" style={{ marginBottom: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
+                <AvisoCerrable className="alert alert-danger" style={{ marginBottom: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" width="16" height="16"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
                   <span><strong>⚡ Instalación no viable — {criticosFaltantes.length} material(es) crítico(s) sin stock:</strong> {criticosFaltantes.map(c => c.nombre + ' (' + c.sku + ')').join(', ')}</span>
-                </div>
+                </AvisoCerrable>
               )}
               {materiales.map(ins => {
                 const disp = parseFloat(ins.stock_disponible || 0);
@@ -277,9 +278,9 @@ export default function PedidoChecklist() {
                         <div style={{ fontSize: 13, fontWeight: 500 }}>{ins.nombre}{ins.es_critico && <> <span style={{ color: 'var(--danger)', fontSize: 11 }}>⚡ Crítico</span></>}</div>
                         <div style={{ fontSize: 11, color: 'var(--gray)' }}>
                           <span className="td-mono">{ins.sku}</span>
-                          {' '}· Requerido: <strong>{req} {ins.unidad || ''}</strong>
-                          {' '}· Disponible: <strong style={{ color: disp >= req ? 'var(--success)' : 'var(--danger)' }}>{disp}</strong>
-                          {parseFloat(ins.ya_reservado || 0) > 0 && <> · Reservado: <strong style={{ color: '#0d6efd' }}>{parseFloat(ins.ya_reservado)}</strong></>}
+                          {' '}· Requerido: <strong>{formatQty(req)} {ins.unidad || ''}</strong>
+                          {' '}· Disponible: <strong style={{ color: disp >= req ? 'var(--success)' : 'var(--danger)' }}>{formatQty(disp)}</strong>
+                          {parseFloat(ins.ya_reservado || 0) > 0 && <> · Reservado: <strong style={{ color: '#0d6efd' }}>{formatQty(ins.ya_reservado)}</strong></>}
                           {' '}· <span style={{ color: ubic ? 'var(--primary)' : 'var(--gray)' }}>📍 {ubic ? ins.ubicaciones.map(u => u.bodega + (u.anaquel ? '/' + u.anaquel : '')).join(', ') : 'Ubicación desconocida'}</span>
                           {ins.stock_otras_bodegas && ins.stock_otras_bodegas.length > 0 && (
                             <div style={{ fontSize: 11, color: 'var(--warning)', marginTop: 2 }}>🔄 Stock disponible en: {ins.stock_otras_bodegas.map(b => b.bodega + ' (' + b.disponible + ')').join(', ')} — Considere solicitar traslado</div>
@@ -300,23 +301,23 @@ export default function PedidoChecklist() {
             <div id="acciones-reserva" style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 20, paddingTop: 16, borderTop: '1px solid var(--gray-mid)' }}>
               {hayCriticosFaltantes ? (
                 <>
-                  <div className="alert alert-danger" style={{ width: '100%', margin: 0, background: '#f5c6cb', borderColor: '#721c24' }}>
+                  <AvisoCerrable className="alert alert-danger" style={{ width: '100%', margin: 0, background: '#f5c6cb', borderColor: '#721c24' }}>
                     <IconAlerta /> <span><strong>Instalación no viable.</strong> Faltan {criticosFaltantes.length} material(es) crítico(s). No se puede agendar la instalación hasta resolver el abastecimiento.</span>
-                  </div>
+                  </AvisoCerrable>
                   <Link to="/movimientos/entrada" className="btn btn-secondary">Registrar compra de emergencia</Link>
                 </>
               ) : hayFaltantes ? (
                 <>
-                  <div className="alert alert-danger" style={{ width: '100%', margin: 0 }}>
+                  <AvisoCerrable className="alert alert-danger" style={{ width: '100%', margin: 0 }}>
                     <IconAlerta /> <span>{data.resumen.faltante} material(es) sin stock suficiente. Registra una compra antes de confirmar.</span>
-                  </div>
+                  </AvisoCerrable>
                   <Link to="/movimientos/entrada" className="btn btn-secondary">Registrar compra</Link>
                 </>
               ) : (data.resumen.reservado === data.resumen.total && data.resumen.total > 0) ? (
-                <div className="alert alert-success" style={{ margin: 0 }}>
+                <AvisoCerrable className="alert alert-success" style={{ margin: 0 }}>
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" width="14" height="14"><polyline points="20 6 9 17 4 12"/></svg>
                   Todos los materiales están reservados para esta orden.
-                </div>
+                </AvisoCerrable>
               ) : (
                 <>
                   <Link to="/movimientos/entrada" className="btn btn-secondary">Registrar compra</Link>

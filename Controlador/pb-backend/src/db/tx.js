@@ -30,7 +30,7 @@ async function conTransaccion(fn, intentos = 3) {
   for (let i = 0; i < intentos; i++) {
     const client = await pool.connect();
     try {
-      await client.query(`SET search_path TO ${process.env.DB_SCHEMA || 'inventario'}`);
+      // El search_path viene en la configuración de la conexión (C-03, db/pool.js)
       await client.query('BEGIN');
       const resultado = await fn(client);
       await client.query('COMMIT');

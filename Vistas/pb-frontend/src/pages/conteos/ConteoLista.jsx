@@ -4,6 +4,8 @@ import { API } from '../../services/api';
 import { usePageTitle } from '../../contexts/TitleContext';
 import Alert, { useAlert } from '../../components/Alert';
 import { useAuth } from '../../hooks/useAuth';
+import { usePagination } from '../../hooks/usePagination';
+import Pagination from '../../components/Pagination';
 import { badgeEstado, fechaHora } from './formato';
 import ToleranciasConteo from './ToleranciasConteo';
 
@@ -17,6 +19,7 @@ export default function ConteoLista() {
   const esGerencia = user?.rol === 'gerencia';
   const { alert, showAlert } = useAlert();
   const [conteos, setConteos] = useState(null);
+  const pag = usePagination(conteos, 20);   // B-10
   const [bodegas, setBodegas] = useState([]);
   const [bodegaId, setBodegaId] = useState('');
 
@@ -37,7 +40,7 @@ export default function ConteoLista() {
       <div className="page-header">
         <div>
           <div className="page-title">Conteo cíclico</div>
-          <div className="page-subtitle">Conteos físicos por bodega (CU-37)</div>
+          <div className="page-subtitle">Conteos físicos por bodega</div>
         </div>
         <Link to="/conteos/nuevo" className="btn btn-primary" id="btn-nuevo-conteo">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
@@ -75,7 +78,7 @@ export default function ConteoLista() {
                 <tr><td colSpan={8} style={{ textAlign: 'center', color: 'var(--gray)' }}>
                   No hay conteos registrados{bodegaId ? ' para esta bodega' : ''}. Cree uno con <Link to="/conteos/nuevo">Nuevo conteo</Link>.
                 </td></tr>
-              ) : conteos.map(c => (
+              ) : pag.items.map(c => (
                 <tr key={c.id}>
                   <td className="td-mono">#{c.id}</td>
                   <td>{fechaHora(c.fecha_hora)}{c.justificacion && <span className="badge badge-warning" style={{ marginLeft: 6 }} title={c.justificacion}>Recuento</span>}</td>
@@ -103,6 +106,7 @@ export default function ConteoLista() {
             </tbody>
           </table>
         </div>
+        <Pagination {...pag} />
       </div>
     </>
   );

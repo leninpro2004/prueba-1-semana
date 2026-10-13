@@ -21,6 +21,37 @@ export function formatMoney(val) {
   return '$' + Math.round(parseFloat(val)).toLocaleString('es-CL');
 }
 
+/**
+ * F-07 (#20): monto en CLP con signo menos si es negativo (-1250 → "-$1.250"; 1250 → "$1.250").
+ * Para impactos donde la pérdida se muestra negativa. Igual que el CSV (formatoClp).
+ */
+export function formatMoneySigno(val) {
+  if (val == null || val === '' || isNaN(val)) return '—';
+  const n = Math.round(parseFloat(val));
+  return (n < 0 ? '-$' : '$') + Math.abs(n).toLocaleString('es-CL');
+}
+
+/* ── Etiquetas legibles de valores guardados en snake_case o sin tildes (sesión 15b) ──
+   Solo para mostrar: los filtros y las comparaciones siguen usando el valor guardado. */
+const ETIQUETAS = {
+  pendiente: 'Pendiente', en_curso: 'En curso', finalizada: 'Finalizada', cancelada: 'Cancelada',
+  revertido: 'Revertido', pendiente_aprobacion: 'Pendiente de aprobación',
+  'stock critico': 'Stock crítico', 'stock bajo minimo': 'Stock bajo mínimo', 'stock maximo': 'Stock sobre el máximo',
+  'diferencia inventario': 'Diferencia de inventario', 'diferencia inventario critica': 'Diferencia de inventario crítica',
+  'faltante en retiro': 'Faltante en retiro', 'tiempo reposicion': 'Tiempo de reposición',
+  'ubicacion incorrecta': 'Ubicación incorrecta',
+};
+
+/** 'en_curso' → 'En curso', 'stock_critico' → 'Stock crítico'; lo desconocido, sin guiones bajos y con mayúscula. */
+export function etiqueta(v) {
+  if (v == null || v === '') return '—';
+  const s = String(v);
+  const conocida = ETIQUETAS[s] ?? ETIQUETAS[s.replace(/_/g, ' ').toLowerCase()];
+  if (conocida) return conocida;
+  const t = s.replace(/_/g, ' ');
+  return t.charAt(0).toUpperCase() + t.slice(1);
+}
+
 /* ── Fechas en hora LOCAL ──
    Nunca toISOString() ni cortar el texto de un timestamp por la 'T': el backend manda
    los timestamps en UTC, y de noche en Chile (desde las 20:00 o 21:00) eso ya es el día
@@ -59,4 +90,22 @@ export function fechaHoraLocal(v, segundos = false) {
 /** Valor para un <input type="datetime-local">: 'AAAA-MM-DDTHH:MM' en hora local. */
 export function datetimeLocal(d = new Date()) {
   return `${aTexto(d)}T${dos(d.getHours())}:${dos(d.getMinutes())}`;
+}
+
+/**
+ * F-17: nombre corto para las tablas densas (material o proveedor). Si el texto pasa de `max`
+ * caracteres (con 5 de holgura) se corta en la última palabra completa que cabe, sin dejar al final un conector
+ * ("de", "con"...) ni puntuación, y se agrega "…". El nombre completo va en el title
+ * (components/NombreCorto.jsx). Es un corte mecánico: un nombre corto escrito a mano es DDL-06.
+ */
+const CONECTORES = new Set(['de', 'del', 'la', 'el', 'los', 'las', 'con', 'y', 'e', 'o', 'para', 'en', 'a', 'al', 'por', 'sin']);
+export function nombreCorto(texto, max = 30) {
+  const t = String(texto ?? '').trim().replace(/\s+/g, ' ');
+  // Cortar 2 o 3 letras no ahorra espacio y sí borra el final, que suele ser la medida
+  if (t.length <= max + 5) return t;
+  const palabras = t.slice(0, max).split(' ');
+  if (t[max] !== ' ' && palabras.length > 1) palabras.pop();   // la última quedó cortada a la mitad
+  while (palabras.length > 1 && CONECTORES.has(palabras[palabras.length - 1].toLowerCase())) palabras.pop();
+  const corto = palabras.join(' ').replace(/[\s,;:.\-–(]+$/, '');
+  return (corto || t.slice(0, max)) + '…';
 }

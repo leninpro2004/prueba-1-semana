@@ -1,5 +1,6 @@
 const { query } = require('../db/pool');
 const { conTransaccion, responderError } = require('../db/tx');
+const { SQL_ESTADOS_OT_CERRADA } = require('../db/estadosOT');
 const { stockAFecha, consumoNeto, precioVigente } = require('../db/historico');
 const { ocultaMontos, quitarCampos } = require('../middleware/auth');
 const auditoria = require('./auditoriaController');
@@ -647,7 +648,7 @@ async function resolverRangoProgramacion(reqQuery) {
  * en vez de la de instalacion.
  */
 const WHERE_PROGRAMACION = `
-       WHERE ot.orden_trabajo_estado NOT IN ('cancelada', 'finalizada', 'completada', 'cerrada')
+       WHERE ot.orden_trabajo_estado NOT IN (${SQL_ESTADOS_OT_CERRADA})
          AND COALESCE(p.fecha_instalacion, ot.orden_trabajo_fecha_hora::date) >= $1::date
          AND COALESCE(p.fecha_instalacion, ot.orden_trabajo_fecha_hora::date) <  $2::date`;
 
@@ -1373,4 +1374,111 @@ async function desviaciones(req, res) {
   }
 }
 
-module.exports = { reporteMovimientos, reporteMermas, valorizacion, consumoArea, consumoAreaGrafico, programacionSemanal, exportarProgramacion, exportarProgramacionPDF, listarAreas, rotacion, historico, desviaciones };
+/**
+ * GET /api/reportes/resumen — B-08b: indicadores del mes en curso para el índice de reportes.
+ * Solo lee. Cada número usa el MISMO criterio que su reporte (los tests lo comparan):
+ *  - movimientos: vigentes, como el resumen del reporte de Movimientos (traslado = salida "Traslado")
+ *  - mermas: confirmadas (sin revertidas, rechazadas ni pendientes), como el de Mermas; el valor solo
+ *    a gerencia, igual que allá
+ *  - desviaciones (gerencia y jop): ítems con pérdida de las OT del mes; el impacto solo a quien ve montos
+ *  - valor del inventario (gerencia): el total de Valorización
+ * El mes se calcula en la zona horaria de la sesión de la BD (hora de Chile), como los demás reportes.
+ */
+async function resumen(req, res) {
+  const rol = req.user?.rol;
+  const esGerencia = rol === 'gerencia';
+  try {
+    const { rows: [per] } = await query(
+      `SELECT TO_CHAR(date_trunc('month', CURRENT_DATE), 'YYYY-MM-DD') AS desde, TO_CHAR(CURRENT_DATE, 'YYYY-MM-DD') AS hasta`);
+    const rango = [per.desde, per.hasta];
+
+    const { rows: [mov] } = await query(
+      `SELECT COUNT(*)::int AS total,
+              COUNT(*) FILTER (WHERE tm.movimiento_inventario_tipo_movimiento_nombre ILIKE '%entrada%')::int AS entradas,
+              COUNT(*) FILTER (WHERE tm.movimiento_inventario_tipo_movimiento_nombre ILIKE '%salida%')::int AS salidas,
+              COUNT(*) FILTER (WHERE tm.movimiento_inventario_tipo_movimiento_nombre ILIKE '%salida%'
+                                 AND cs.movimiento_inventario_clasificacion_salida_nombre ILIKE '%traslado%')::int AS traslados
+       FROM movimiento_inventario mi
+       JOIN movimiento_inventario_tipo_movimiento tm
+            ON tm.movimiento_inventario_tipo_movimiento_id_tipo_movimiento
+             = mi.movimiento_inventario_tipo_movimiento_id_tipo_movimiento
+       LEFT JOIN movimiento_inventario_motivo_movimiento mot
+            ON mot.movimiento_inventario_motivo_movimiento_id_motivo_movimiento
+             = mi.movimiento_inventario_motivo_movimiento_id_motivo_movimiento
+       LEFT JOIN movimiento_inventario_clasificacion_salida cs
+            ON cs.movimiento_inventario_clasificacion_salida_id_clasificacion_salida
+             = mot.movimiento_inventario_clasificacion_salida_id_clasificacion_salida
+       WHERE mi.movimiento_inventario_fecha_hora >= $1::date
+         AND mi.movimiento_inventario_fecha_hora < ($2::date + INTERVAL '1 day')
+         AND mi.movimiento_inventario_estado <> ALL ($3::text[])
+         AND mi.movimiento_inventario_id_revertido IS NULL`,
+      [...rango, ESTADOS_NO_VIGENTES]
+    );
+
+    const { rows: [mer] } = await query(
+      `SELECT COUNT(*)::int AS eventos,
+              COALESCE(SUM(mi.movimiento_inventario_cantidad * COALESCE(mp.material_proveedor_precio_referencial, 0)), 0)::float AS valor
+       FROM movimiento_inventario mi
+       JOIN movimiento_inventario_tipo_movimiento tm
+            ON tm.movimiento_inventario_tipo_movimiento_id_tipo_movimiento
+             = mi.movimiento_inventario_tipo_movimiento_id_tipo_movimiento
+       JOIN movimiento_inventario_motivo_movimiento mot
+            ON mot.movimiento_inventario_motivo_movimiento_id_motivo_movimiento
+             = mi.movimiento_inventario_motivo_movimiento_id_motivo_movimiento
+       LEFT JOIN movimiento_inventario_clasificacion_salida cs
+            ON cs.movimiento_inventario_clasificacion_salida_id_clasificacion_salida
+             = mot.movimiento_inventario_clasificacion_salida_id_clasificacion_salida
+       LEFT JOIN material_proveedor mp
+            ON mp.material_sku = mi.material_sku AND mp.material_proveedor_proveedor_principal = TRUE
+       WHERE mi.movimiento_inventario_fecha_hora >= $1::date
+         AND mi.movimiento_inventario_fecha_hora < ($2::date + INTERVAL '1 day')
+         AND tm.movimiento_inventario_tipo_movimiento_nombre ILIKE '%salida%'
+         AND LOWER(cs.movimiento_inventario_clasificacion_salida_nombre) LIKE ANY ($3::text[])
+         AND mi.movimiento_inventario_estado NOT IN ('revertido', 'rechazado', 'pendiente_aprobacion')`,
+      [...rango, PATRONES_MERMA]
+    );
+
+    const r = {
+      periodo: { desde: per.desde, hasta: per.hasta },
+      movimientos: mov,
+      mermas: { eventos: mer.eventos, ...(esGerencia && { valor_clp: Math.round(mer.valor) }) },
+    };
+
+    if (['gerencia', 'jop'].includes(rol)) {
+      const { rows: [des] } = await query(
+        `SELECT COUNT(*)::int AS items, COUNT(DISTINCT d.orden_trabajo_id_orden)::int AS ots,
+                COALESCE(SUM(d.diferencial_consumo_impacto_clp), 0)::float AS impacto
+         FROM diferencial_consumo d
+         JOIN orden_trabajo ot ON ot.orden_trabajo_id_orden = d.orden_trabajo_id_orden
+         WHERE ot.orden_trabajo_fecha_hora >= $1::date
+           AND ot.orden_trabajo_fecha_hora < ($2::date + INTERVAL '1 day')
+           AND d.diferencial_consumo_tipo = ANY ($3::text[])`,
+        [...rango, TIPOS_PERDIDA]
+      );
+      r.desviaciones = { items: des.items, ots: des.ots,
+        ...(!ocultaMontos(req) && { impacto_clp: Math.round(des.impacto * 100) / 100 }) };
+    }
+
+    if (esGerencia) {
+      const { rows: [val] } = await query(
+        `SELECT COALESCE(SUM(stock * COALESCE(precio, 0)), 0)::float AS valor,
+                COUNT(*) FILTER (WHERE precio IS NULL)::int AS sin_precio
+         FROM (SELECT SUM(ib.inventario_bodega_cantidad_fisica) AS stock, mp.material_proveedor_precio_referencial AS precio
+               FROM material m
+               JOIN inventario_bodega ib ON ib.material_sku = m.material_sku
+               LEFT JOIN material_proveedor mp
+                      ON mp.material_sku = m.material_sku AND mp.material_proveedor_proveedor_principal = TRUE
+               WHERE m.material_estado = 'activo'
+               GROUP BY m.material_sku, mp.material_proveedor_precio_referencial
+               HAVING SUM(ib.inventario_bodega_cantidad_fisica) > 0) x`
+      );
+      r.valor_inventario = { valor_clp: Math.round(val.valor), sin_precio: val.sin_precio };
+    }
+
+    res.json(r);
+  } catch (err) {
+    responderError(res, err, 'Error generando el resumen de reportes:');
+  }
+}
+
+module.exports = { reporteMovimientos, reporteMermas, valorizacion, consumoArea, consumoAreaGrafico, programacionSemanal, exportarProgramacion, exportarProgramacionPDF, listarAreas, rotacion, historico, desviaciones, resumen };

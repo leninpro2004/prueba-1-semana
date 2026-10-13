@@ -112,10 +112,13 @@ async function marcarTodasLeidas(req, res) {
  * @param {string} opts.tipo   — ej: 'alerta_stock', 'merma_pendiente', 'programacion'
  * @param {string} opts.mensaje
  * @param {string} opts.origen — ej: 'sistema', 'alertas', 'movimientos'
+ * @param {string} [opts.ruta] — B-06: pantalla a la que lleva el clic (ej. '/conteos/15/diferencias').
+ *   Se guarda en notificacion_origen en lugar del origen: el frontend trata un origen que empieza
+ *   con '/' como la ruta exacta (hooks/useNotifications.js), sin una columna nueva.
  * @param {number|null} opts.alertaId — FK a alerta_inventario (opcional)
  * @param {number[]} opts.usuarioIds — lista de usuarios destinatarios
  */
-async function crearNotificacion({ tipo, mensaje, origen, alertaId, usuarioIds }) {
+async function crearNotificacion({ tipo, mensaje, origen, ruta, alertaId, usuarioIds }) {
   try {
     for (const uid of usuarioIds) {
       await query(
@@ -124,7 +127,7 @@ async function crearNotificacion({ tipo, mensaje, origen, alertaId, usuarioIds }
            notificacion_origen, alerta_inventario_id_alerta,
            usuario_id_usuario
          ) VALUES ($1, $2, $3, $4, $5)`,
-        [tipo, mensaje, origen || 'sistema', alertaId || null, uid]
+        [tipo, mensaje, (ruta || origen || 'sistema').slice(0, 150), alertaId || null, uid]
       );
     }
   } catch (err) {
@@ -137,7 +140,7 @@ async function crearNotificacion({ tipo, mensaje, origen, alertaId, usuarioIds }
  *
  * @param {object} opts — mismos que crearNotificacion + opts.rol ('gerencia'|'jop')
  */
-async function notificarPorRol({ tipo, mensaje, origen, alertaId, rol }) {
+async function notificarPorRol({ tipo, mensaje, origen, ruta, alertaId, rol }) {
   try {
     const colRol = rol === 'gerencia' ? 'usuario_es_gerencia' : 'usuario_es_jop';
     const { rows } = await query(
@@ -146,7 +149,7 @@ async function notificarPorRol({ tipo, mensaje, origen, alertaId, rol }) {
     );
     if (rows.length > 0) {
       await crearNotificacion({
-        tipo, mensaje, origen, alertaId,
+        tipo, mensaje, origen, ruta, alertaId,
         usuarioIds: rows.map(r => r.id)
       });
     }

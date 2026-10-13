@@ -253,7 +253,7 @@ export default function TabInsumosEspeciales({ esGerencia }) {
                     </td>
                     <td style={{ fontSize: 13 }}>
                       {a.sin_proveedor
-                        ? <span className="badge badge-orange" title="Exc 2: identificar un proveedor de forma manual">Sin proveedor: identificar manualmente</span>
+                        ? <span className="badge badge-orange" title="Identifique el proveedor de forma manual">Sin proveedor: identificar manualmente</span>
                         : <>{a.proveedor}{a.plazo_dias_habiles != null && <div style={{ fontSize: 11, color: 'var(--gray)' }}>{a.plazo_dias_habiles} días hábiles</div>}</>}
                     </td>
                     <td>{ddmmaaaa(a.entrega_maxima)}</td>

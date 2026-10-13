@@ -4,16 +4,19 @@ import { API } from '../../services/api';
 import { useAuth } from '../../hooks/useAuth';
 import { useConfirm } from '../../hooks/useDialog';
 import { usePageTitle } from '../../contexts/TitleContext';
-import { fechaLocal } from '../../utils/format';
-import Alert, { useAlert } from '../../components/Alert';
+import { fechaLocal, etiqueta } from '../../utils/format';
+import Alert, { useAlert, AvisoCerrable } from '../../components/Alert';
 import Pagination from '../../components/Pagination';
 import { usePagination } from '../../hooks/usePagination';
 import BotonExportar from '../../components/BotonExportar';
 import { exportarCSV, ErrorExportacion, LIMITE_FILAS } from '../../utils/csvExport';
+import NombreCorto from '../../components/NombreCorto';   // F-17
 
 const getPrioridadCls = (p) => p === 'urgente' ? 'badge-danger' : p === 'alta' ? 'badge-warning' : 'badge-gray';
 const BORDER = { urgente: 'var(--danger)', alta: 'var(--warning)', media: 'var(--gray-mid)' };
 const fecha = (a) => fechaLocal(a.fecha_generacion);
+// CU-126: las alertas del retiro se explican por su mensaje (venta, bodega y cuánto falta), no por el stock
+const esDeRetiro = (a) => ['faltante en retiro', 'ubicacion incorrecta'].includes(String(a?.tipo || '').replace(/_/g, ' ').toLowerCase());
 // CU-57: "−2 (−6,67 %)"; sin stock teórico no hay porcentaje
 const num = (v) => Number(v).toLocaleString('es-CL', { maximumFractionDigits: 4 });
 const difConteo = (a) => {
@@ -83,7 +86,7 @@ function TablaEnRiesgo({ criticas, preventivas }) {
                     ? <>{p.plazo_dias_habiles} días hábiles<div style={{ color: 'var(--gray)' }}>({p.plazo_dias_corridos} corridos)</div></>
                     : <span style={{ color: 'var(--warning)' }}>Sin plazo</span>}
                 </td>
-                <td style={{ fontSize: 12 }}>{p.proveedor || <span style={{ color: 'var(--warning)' }}>Sin proveedor con plazo</span>}</td>
+                <td style={{ fontSize: 12 }}><NombreCorto texto={p.proveedor} vacio={<span style={{ color: 'var(--warning)' }}>Sin proveedor con plazo</span>} /></td>
                 <td style={{ fontWeight: 600 }}>{p.cantidad_sugerida != null ? num(p.cantidad_sugerida) : '—'}</td>
                 <td style={{ fontSize: 12, maxWidth: 280 }}>{p.notas?.length ? p.notas.join(' ') : '—'}</td>
                 <td>{p.alerta === 'nueva'
@@ -255,11 +258,11 @@ function PanelReposicion({ onEvaluado }) {
           : <span style={{ fontSize: 12, color: 'var(--gray)' }}>Solo Gerencia y Jefatura de Operaciones pueden evaluar.</span>}
       </div>
 
-      {error && <div className="alert alert-danger" style={{ marginTop: 16 }}>{error}</div>}
+      <Alert type="danger" message={error} style={{ marginTop: 16 }} onClose={() => setError('')} />
 
       {resultado && (
         <>
-          <div className={`alert ${resultado.en_riesgo > 0 ? 'alert-warning' : 'alert-success'}`} style={{ marginTop: 16 }}>
+          <AvisoCerrable className={`alert ${resultado.en_riesgo > 0 ? 'alert-warning' : 'alert-success'}`} style={{ marginTop: 16 }}>
             <div><strong>{resultado.message}</strong></div>
             <div style={{ fontSize: 13, marginTop: 6 }}>
               Alertas: <strong>{resultado.nuevas}</strong> nueva(s) · <strong>{resultado.actualizadas}</strong> actualizada(s) ·{' '}
@@ -269,7 +272,7 @@ function PanelReposicion({ onEvaluado }) {
               {resultado.evaluados} producto(s) evaluado(s).
               {resultado.en_riesgo > 0 && ' Las alertas también quedan en la pestaña Alertas.'}
             </div>
-          </div>
+          </AvisoCerrable>
           <div className="kpi-grid" style={{ marginTop: 16 }}>
             <div className="kpi-card kpi-danger"><div className="kpi-label">Críticos</div><div className="kpi-value danger">{resultado.criticas.length}</div><div className="kpi-sub">Sin stock disponible</div></div>
             <div className="kpi-card kpi-warning"><div className="kpi-label">Preventivos</div><div className="kpi-value warning">{resultado.preventivas.length}</div><div className="kpi-sub">Se agotan antes de la reposición</div></div>
@@ -391,7 +394,7 @@ function HistorialAlertas({ tipos }) {
           </div>
           <select className="form-control" id="hist-tipo" style={{ width: 'auto' }} value={tipo} onChange={e => setTipo(e.target.value)}>
             <option value="">Todos los tipos</option>
-            {tipos.map(t => <option key={t} value={t}>{t}</option>)}
+            {tipos.map(t => <option key={t} value={t}>{etiqueta(t)}</option>)}
           </select>
           <input type="date" className="form-control" id="hist-desde" title="Generadas desde" max={hoy} style={{ width: 'auto', ...(errorRango && { borderColor: 'var(--danger)' }) }} value={desde} onChange={e => setDesde(e.target.value)} />
           <input type="date" className="form-control" id="hist-hasta" title="Generadas hasta" max={hoy} style={{ width: 'auto', ...(errorRango && { borderColor: 'var(--danger)' }) }} value={hasta} onChange={e => setHasta(e.target.value)} />
@@ -401,8 +404,8 @@ function HistorialAlertas({ tipos }) {
         </div>
       </div>
 
-      {errorRango && <div className="alert alert-danger" style={{ marginBottom: 16 }}>{errorRango}</div>}
-      {error && <div className="alert alert-danger" style={{ marginBottom: 16 }}>{error}</div>}
+      {errorRango && <AvisoCerrable className="alert alert-danger" style={{ marginBottom: 16 }}>{errorRango}</AvisoCerrable>}
+      <Alert type="danger" message={error} style={{ marginBottom: 16 }} onClose={() => setError('')} />
 
       {r && !errorRango && (
         <div className="kpi-grid" style={{ marginBottom: 16 }}>
@@ -416,9 +419,9 @@ function HistorialAlertas({ tipos }) {
       {data && !errorRango && (
         <div className="card">
           {data.limitado && (
-            <div className="alert alert-warning" style={{ marginBottom: 12 }}>
+            <AvisoCerrable className="alert alert-warning" style={{ marginBottom: 12 }}>
               Se muestran las 500 alertas más recientes de {r.total}. Acote los filtros para ver las anteriores; los indicadores sí consideran todas.
-            </div>
+            </AvisoCerrable>
           )}
           {data.alertas.length === 0 ? (
             <div className="empty-state">
@@ -444,7 +447,7 @@ function HistorialAlertas({ tipos }) {
                         <td style={{ fontSize: 12, whiteSpace: 'nowrap' }}>{fechaHora(a.fecha_generacion)}</td>
                         <td style={{ fontSize: 12, whiteSpace: 'nowrap' }}>{a.en_curso ? '—' : fechaHora(a.fecha_resolucion)}</td>
                         <td style={{ fontSize: 13 }}><div style={{ fontWeight: 500 }}>{a.producto}</div><div style={{ fontSize: 11, color: '#aaa' }}>{a.sku}</div></td>
-                        <td style={{ fontSize: 13 }}>{a.tipo}</td>
+                        <td style={{ fontSize: 13 }}>{etiqueta(a.tipo)}</td>
                         <td><span className={`badge ${getPrioridadCls(a.severidad)}`}>{a.severidad}</span></td>
                         <td><span className={`badge ${a.en_curso ? 'badge-warning' : 'badge-success'}`}>{a.estado}</span></td>
                         <td style={{ fontSize: 13 }}>
@@ -624,7 +627,7 @@ export default function Alertas() {
         </select>
         <select className="form-control" id="filter-tipo" style={{ width: 'auto' }} value={ft} onChange={e => setFt(e.target.value)}>
           <option value="">Todos los tipos</option>
-          {tipos.map(t => <option key={t} value={t}>{t}</option>)}
+          {tipos.map(t => <option key={t} value={t}>{etiqueta(t)}</option>)}
         </select>
         <label htmlFor="filter-criticos" style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, cursor: 'pointer' }}>
           <input type="checkbox" id="filter-criticos" checked={fc} onChange={e => setFc(e.target.checked)} />
@@ -654,7 +657,7 @@ export default function Alertas() {
                   <span style={{ fontSize: 13, fontWeight: 600 }}>{a.producto}</span>
                 </div>
                 <div style={{ fontSize: 12, color: 'var(--gray)' }}>
-                  <span className="td-mono">{a.sku}</span> · {a.tipo}
+                  <span className="td-mono">{a.sku}</span> · {etiqueta(a.tipo)}
                   {a.conteo_id ? (
                     // CU-57: alerta por diferencia de conteo
                     <>
@@ -662,6 +665,8 @@ export default function Alertas() {
                       {' '}· <Link to={`/conteos/${a.conteo_id}`}>Conteo #{a.conteo_id}</Link>
                       {' '}· {fecha(a)}
                     </>
+                  ) : esDeRetiro(a) ? (
+                    <>{' '}· {a.mensaje} · {fecha(a)}</>
                   ) : (
                     <>
                       {' '}· Stock actual: <strong style={{ color: a.prioridad === 'urgente' ? 'var(--danger)' : '#000' }}>{parseFloat(a.stock_actual || 0)}</strong>
@@ -705,7 +710,7 @@ export default function Alertas() {
                   {detalle.conteo_id ? (
                     // CU-57: alerta por diferencia de conteo
                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 16, fontSize: 13 }}>
-                      <div><span style={{ color: 'var(--gray)' }}>Tipo:</span> {detalle.tipo}</div>
+                      <div><span style={{ color: 'var(--gray)' }}>Tipo:</span> {etiqueta(detalle.tipo)}</div>
                       <div><span style={{ color: 'var(--gray)' }}>Estado:</span> {detalle.estado}</div>
                       <div><span style={{ color: 'var(--gray)' }}>Bodega:</span> {detalle.bodega}</div>
                       <div><span style={{ color: 'var(--gray)' }}>Diferencia:</span> <strong>{difConteo(detalle)}</strong></div>
@@ -715,7 +720,8 @@ export default function Alertas() {
                     </div>
                   ) : (
                   <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 16, fontSize: 13 }}>
-                    <div><span style={{ color: 'var(--gray)' }}>Tipo:</span> {detalle.tipo || '—'}</div>
+                    {esDeRetiro(detalle) && <div style={{ gridColumn: '1 / -1' }}>{detalle.mensaje}</div>}
+                    <div><span style={{ color: 'var(--gray)' }}>Tipo:</span> {etiqueta(detalle.tipo)}</div>
                     <div><span style={{ color: 'var(--gray)' }}>Estado:</span> {detalle.estado}</div>
                     <div><span style={{ color: 'var(--gray)' }}>Stock actual:</span> <strong style={{ color: detalle.prioridad === 'urgente' ? 'var(--danger)' : 'inherit' }}>{parseFloat(detalle.stock_actual || 0)}</strong></div>
                     <div><span style={{ color: 'var(--gray)' }}>Stock mínimo:</span> {parseFloat(detalle.stock_minimo || 0)}</div>

@@ -3,22 +3,24 @@ import { API } from '../../services/api';
 import { usePageTitle } from '../../contexts/TitleContext';
 import { useAuth } from '../../hooks/useAuth';
 import Alert from '../../components/Alert';
+import { formatQty } from '../../utils/format';
 
 /**
- * CU-107: simulador de módulo externo. HERRAMIENTA DE PRUEBA, solo en desarrollo
+ * CU-107 y CU-106: simulador de módulo externo. HERRAMIENTA DE PRUEBA, solo en desarrollo
  * (la ruta y el ítem del menú existen solo con import.meta.env.DEV): no llega al
  * build que se entrega al cliente.
  *
  * Emula la pantalla de Terreno o Finanzas: llama a POST /api/integracion/movimientos
  * con el token del usuario conectado, igual que lo harán esos módulos con el login
  * común, y muestra la respuesta como la vería el otro módulo. Para probar los
- * rechazos por rol, entrar con otro usuario.
+ * rechazos por rol, entrar con otro usuario. La tarjeta "Consultar stock" llama a
+ * GET /api/integracion/stock (CU-106), que solo lee.
  */
 
 const MODULOS = [{ valor: 'terreno', nombre: 'Terreno' }, { valor: 'finanzas', nombre: 'Finanzas' }];
 const TIPOS = [{ valor: 'salida', nombre: 'Salida' }, { valor: 'entrada', nombre: 'Entrada (devolución)' }];
 const OTRO = '__otro__';
-const FORM_INICIAL ={ modulo: 'terreno', tipo: 'salida', sku: '', bodega_id: '', cantidad: '', referencia: '', descripcion: '' };
+const FORM_INICIAL ={ modulo: 'terreno', tipo: 'salida', sku: '', bodega_id: '', cantidad: '', referencia: '', descripcion: '', gasto_caja_chica_id: '' };
 
 const nuevaClave = () => (crypto.randomUUID ? crypto.randomUUID() : `sim-${Date.now()}-${Math.random().toString(16).slice(2)}`);
 const hora = () => new Date().toLocaleTimeString('es-CL');
@@ -46,6 +48,11 @@ export default function SimuladorModulo() {
   const [respuesta, setRespuesta] = useState(null);
   const [historial, setHistorial] = useState([]);
   const [enviando, setEnviando] = useState(false);
+  // CU-106
+  const [consulta, setConsulta] = useState({ sku: '', bodega_id: '' });
+  const [otroSkuConsulta, setOtroSkuConsulta] = useState(false);
+  const [stock, setStock] = useState(null);         // { ok, datos } | { ok: false, status, message, campos }
+  const [consultando, setConsultando] = useState(false);
 
   useEffect(() => {
     Promise.all([API.materiales.listar(), API.bodegas.listar()])
@@ -71,17 +78,32 @@ export default function SimuladorModulo() {
   };
 
   // Cada envío nuevo lleva su propia clave; "Reenviar" repite la última (idempotencia)
-  const enviarNuevo = () => enviar({ ...form, clave_envio: nuevaClave() });
+  // F-23: el n° de gasto de caja chica solo viaja si se escribió (sin él, la entrada es una devolución)
+  const enviarNuevo = () => {
+    const { gasto_caja_chica_id, ...resto } = form;
+    enviar({ ...resto, ...(gasto_caja_chica_id.trim() && { gasto_caja_chica_id: gasto_caja_chica_id.trim() }), clave_envio: nuevaClave() });
+  };
   const reenviar = () => ultimo && enviar(ultimo);
 
   const moduloNombre = (v) => MODULOS.find(m => m.valor === v)?.nombre || v || '—';
+
+  const consultarStock = async () => {
+    setConsultando(true);
+    try {
+      setStock({ ok: true, datos: await API.integracion.consultarStock(consulta) });
+    } catch (err) {
+      setStock({ ok: false, status: err.status || 0, codigo: err.payload?.codigo, message: err.message, campos: err.payload?.campos });
+    } finally {
+      setConsultando(false);
+    }
+  };
 
   return (
     <>
       <div className="page-header">
         <div>
           <div className="page-title">Simulador de módulo externo</div>
-          <div className="page-subtitle">Envía movimientos a Inventario como lo harían Terreno o Finanzas (CU-107)</div>
+          <div className="page-subtitle">Envía movimientos y consulta stock como lo harían Terreno o Finanzas</div>
         </div>
       </div>
 
@@ -147,6 +169,15 @@ export default function SimuladorModulo() {
             </div>
           </div>
           <div className="form-group" style={{ marginTop: 12 }}>
+            <label className="form-label" htmlFor="sim-gasto">N° de gasto de caja chica (opcional)</label>
+            <input className="form-control" id="sim-gasto" inputMode="numeric" value={form.gasto_caja_chica_id} onChange={cambiar('gasto_caja_chica_id')}
+              placeholder="Ej. 125" />
+            <div className="form-hint">
+              Solo Finanzas, en una entrada: la registra como compra por caja chica (referencia CC-n°, lote nuevo).
+              Sin él, una entrada es una devolución de obra.
+            </div>
+          </div>
+          <div className="form-group" style={{ marginTop: 12 }}>
             <label className="form-label" htmlFor="sim-descripcion">Descripción (opcional)</label>
             <input className="form-control" id="sim-descripcion" value={form.descripcion} onChange={cambiar('descripcion')} />
           </div>
@@ -189,6 +220,91 @@ export default function SimuladorModulo() {
         </div>
       </div>
 
+      <div className="card" id="sim-stock" style={{ marginTop: 16 }}>
+        <div className="section-label">Consultar stock</div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12, marginTop: 8, alignItems: 'end' }}>
+          <div className="form-group">
+            <label className="form-label" htmlFor="sim-stock-sku">Producto</label>
+            <select className="form-control" id="sim-stock-sku" value={otroSkuConsulta ? OTRO : consulta.sku}
+              onChange={e => {
+                const v = e.target.value;
+                setOtroSkuConsulta(v === OTRO);
+                setConsulta(c => ({ ...c, sku: v === OTRO ? '' : v }));
+              }}>
+              <option value="">Seleccionar producto...</option>
+              {materiales.map(m => (
+                <option key={m.sku} value={m.sku}>{m.sku} — {m.nombre}{m.estado && m.estado !== 'activo' ? ` (${m.estado})` : ''}</option>
+              ))}
+              <option value={OTRO}>Otro SKU (escribir)...</option>
+            </select>
+            {otroSkuConsulta && (
+              <input className="form-control" id="sim-stock-sku-otro" style={{ marginTop: 6 }} value={consulta.sku}
+                onChange={e => setConsulta(c => ({ ...c, sku: e.target.value }))} placeholder="SKU a consultar" autoComplete="off" autoFocus />
+            )}
+          </div>
+          <div className="form-group">
+            <label className="form-label" htmlFor="sim-stock-bodega">Bodega (opcional)</label>
+            <select className="form-control" id="sim-stock-bodega" value={consulta.bodega_id}
+              onChange={e => setConsulta(c => ({ ...c, bodega_id: e.target.value }))}>
+              <option value="">Todas las bodegas activas</option>
+              {bodegas.map(b => (
+                <option key={b.id} value={b.id}>{b.nombre}{['activo', 'activa'].includes(b.estado) ? '' : ` (${b.estado})`}</option>
+              ))}
+            </select>
+          </div>
+          <div className="form-group">
+            <button type="button" className="btn btn-primary" id="btn-consultar-stock" onClick={consultarStock} disabled={consultando}>
+              {consultando ? 'Consultando...' : 'Consultar a Inventario'}
+            </button>
+          </div>
+        </div>
+
+        {stock && !stock.ok && (
+          <>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', margin: '8px 0' }}>
+              <span className="badge badge-danger">{stock.status || 'sin conexión'}</span>
+              {stock.codigo && <span className="td-mono" style={{ fontSize: 12 }}>{stock.codigo}</span>}
+            </div>
+            <Alert type="danger" message={stock.message} />
+            {stock.campos?.length > 0 && (
+              <ul style={{ fontSize: 13, margin: '8px 0 0', paddingLeft: 18 }}>
+                {stock.campos.map(c => <li key={c.campo}><strong>{c.campo}</strong>: {c.error}</li>)}
+              </ul>
+            )}
+          </>
+        )}
+        {stock?.ok && stock.datos && (
+          <>
+            <div style={{ margin: '12px 0 8px', fontSize: 14 }}>
+              <span className="badge badge-success">200</span>{' '}
+              <strong>{stock.datos.sku}</strong> — {stock.datos.nombre} <span style={{ color: 'var(--gray)' }}>({stock.datos.unidad})</span>
+            </div>
+            {stock.datos.bodegas.length === 0 ? (
+              <p style={{ color: 'var(--gray)', fontSize: 13 }}>El producto no tiene stock en ninguna bodega activa.</p>
+            ) : (
+              <div className="table-wrap">
+                <table id="sim-stock-tabla">
+                  <thead><tr><th>Bodega</th><th>Físico</th><th>Reservado</th><th>Disponible</th></tr></thead>
+                  <tbody>
+                    {stock.datos.bodegas.map(b => (
+                      <tr key={b.bodega_id}>
+                        <td>{b.bodega}</td><td>{formatQty(b.fisico)}</td><td>{formatQty(b.reservado)}</td><td><strong>{formatQty(b.disponible)}</strong></td>
+                      </tr>
+                    ))}
+                    {stock.datos.bodegas.length > 1 && (
+                      <tr>
+                        <td><strong>Total</strong></td><td>{formatQty(stock.datos.total.fisico)}</td>
+                        <td>{formatQty(stock.datos.total.reservado)}</td><td><strong>{formatQty(stock.datos.total.disponible)}</strong></td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+
       {historial.length > 0 && (
         <div className="card" style={{ marginTop: 16 }}>
           <div className="section-label">Últimos envíos</div>
@@ -203,7 +319,7 @@ export default function SimuladorModulo() {
                     <td>{h.body.tipo}</td>
                     <td className="td-mono" style={{ whiteSpace: 'nowrap' }}>{h.body.sku || '—'}</td>
                     <td>{h.body.cantidad || '—'}</td>
-                    <td>{h.body.referencia || '—'}</td>
+                    <td>{h.body.gasto_caja_chica_id ? `CC-${h.body.gasto_caja_chica_id}` : h.body.referencia || '—'}</td>
                     <td><span className={`badge badge-${h.tipo === 'danger' ? 'danger' : h.tipo === 'info' ? 'info' : 'success'}`}>{h.status} {h.codigo}</span></td>
                   </tr>
                 ))}

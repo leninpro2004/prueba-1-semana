@@ -1,7 +1,6 @@
 const { test, before, after, beforeEach, describe } = require('node:test');
 const assert = require('node:assert/strict');
-const jwt = require('jsonwebtoken');
-const { api, bajar, levantar } = require('./helpers/api');
+const { api, bajar, levantar, token: tokenDe } = require('./helpers/api');
 const db = require('./helpers/db');
 
 /**
@@ -21,10 +20,10 @@ before(async () => { await db.resetear(); });
 beforeEach(async () => { await db.resetear(); });
 after(async () => { await bajar(); await db.cerrar(); });
 
-/** Llama con un rol cualquiera (los helpers solo firman gerencia y jop). */
+/** Llama con un rol cualquiera (un usuario de la semilla por rol). */
 async function comoRol(rol, metodo, ruta, body = {}) {
   const url = await levantar();
-  const token = jwt.sign({ id: 2, username: 'jop.test', rol }, process.env.JWT_SECRET, { expiresIn: '5m' });
+  const token = tokenDe(rol); // B-01: cada rol es un usuario de la semilla
   const opciones = { method: metodo, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } };
   if (metodo !== 'GET') opciones.body = JSON.stringify(body);
   const r = await fetch(url + ruta, opciones);
@@ -51,17 +50,42 @@ const RUTAS = [
   ['PUT', '/api/pedidos-venta/1/cancelar'],
   // D53 (ajuste por conteo) y D54 (corrección de una OT cerrada)
   ['POST', '/api/conteos/1/ajustes'], ['PUT', '/api/ordenes-trabajo/2/correccion'],
+  // F-06: crear OT; F-28: anular OT
+  ['POST', '/api/ordenes-trabajo'], ['PUT', '/api/ordenes-trabajo/1/anular'],
+  // B-03: responsable de una OT y reasignación en bloque (solo gerencia)
+  ['PUT', '/api/ordenes-trabajo/1/responsable'], ['POST', '/api/usuarios/2/reasignar-ot'],
+  // F-08: medidas de la puerta de la OT
+  ['PUT', '/api/ordenes-trabajo/1/medidas'],
+  // B-14: mantenedor de la clasificación (solo gerencia)
+  ['POST', '/api/materiales/catalogos/clasificacion/general'], ['PUT', '/api/materiales/catalogos/clasificacion/general/1'],
+  ['DELETE', '/api/materiales/catalogos/clasificacion/general/1?mover_a=2'],
+  // F-29: crear proyectos en terreno (solo gerencia)
+  ['POST', '/api/ordenes-trabajo/proyectos'],
+  // F-04: mantenedor de áreas, unidades y motivos (solo gerencia)
+  ['POST', '/api/catalogos/areas'], ['PUT', '/api/catalogos/areas/1'],
+  ['POST', '/api/catalogos/unidades'], ['PUT', '/api/catalogos/unidades/2'], ['DELETE', '/api/catalogos/unidades/2'],
+  ['POST', '/api/catalogos/motivos'], ['PUT', '/api/catalogos/motivos/3'], ['DELETE', '/api/catalogos/motivos/3'],
+  ['POST', '/api/catalogos/motivos/restaurar'],
+  // F-23b: alta rápida de un material de caja chica
+  ['POST', '/api/materiales/alta-rapida'],
 ];
 
 /** Una foto de las tablas que estas rutas tocan. */
 async function foto() {
-  const tablas = ['inventario.material', 'inventario.bodega', 'inventario.anaquel', 'inventario.proveedor',
-                  'inventario.movimiento_inventario', 'inventario.inventario_bodega', 'inventario.seguimiento_pintura'];
+  const tablas = ['inventario.material', 'inventario.bodega', 'inventario.anaquel', 'inventario.proveedor', 'inventario.orden_trabajo',
+                  'inventario.movimiento_inventario', 'inventario.inventario_bodega', 'inventario.seguimiento_pintura',
+                  'inventario.material_categoria_general', 'terreno.proyecto', 'terreno.cliente',
+                  'inventario.area_trabajo', 'inventario.material_unidad_medida', 'inventario.movimiento_inventario_motivo_movimiento'];
   const r = {};
   for (const t of tablas) r[t] = await db.contar(t);
   r.stock = await db.stockDe('MAT-FIFO');
   const { rows } = await db.query(`SELECT proveedor_estado AS e FROM inventario.proveedor ORDER BY proveedor_id_proveedor`);
   r.proveedores = rows.map(x => x.e);
+  // F-28 y B-03: anular o reasignar cambian el estado o el responsable, no la cantidad de filas
+  const { rows: ots } = await db.query(
+    `SELECT orden_trabajo_estado AS e, usuario_id_usuario AS u, orden_trabajo_medidas::text AS m
+     FROM inventario.orden_trabajo ORDER BY orden_trabajo_id_orden`);
+  r.estadosOT = ots.map(x => `${x.e}:${x.u}:${x.m}`);
   return r;
 }
 
@@ -105,7 +129,8 @@ describe('Lo que cada rol conserva', () => {
   test('borrar bodegas y anaqueles: gerencia y administrador, no jop', async () => {
     assert.equal((await comoRol('jop', 'DELETE', '/api/bodegas/2')).status, 403);
     assert.equal((await comoRol('jop', 'DELETE', '/api/bodegas/1/anaqueles/1')).status, 403);
-    const r = await comoRol('administrador', 'DELETE', '/api/bodegas/2');   // la bodega 2 está vacía
+    // F-11: el rol pasa y pide la firma de un gerente (eliminar_maestro); api() firma y repite
+    const r = await api('DELETE', '/api/bodegas/2', { rol: 'administrador' });   // la bodega 2 está vacía
     assert.equal(r.status, 200, JSON.stringify(r.body));
   });
 });

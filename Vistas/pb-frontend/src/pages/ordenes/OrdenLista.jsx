@@ -7,6 +7,8 @@ import Alert, { useAlert } from '../../components/Alert';
 import Pagination, { EmptyRow } from '../../components/Pagination';
 import { usePagination } from '../../hooks/usePagination';
 import { ocultaMontos } from '../../utils/user';
+import { etiqueta } from '../../utils/format';
+import NuevaOT from './NuevaOT';
 
 const badgeEstado = (e) => e === 'cancelada' ? 'badge-ghost'
   : e === 'cerrada' || e === 'finalizada' || e === 'completada' ? 'badge-success'
@@ -18,6 +20,9 @@ export default function OrdenLista() {
   const { user } = useAuth();
   const { alert, showAlert } = useAlert();
   const verCostos = !ocultaMontos(user);
+  // F-06: crear OT (mismo permiso que el backend: soloOperativo)
+  const puedeCrear = ['gerencia', 'administrador', 'jop'].includes(user?.rol);
+  const [nuevaAbierta, setNuevaAbierta] = useState(false);
 
   const [estado, setEstado] = useState('');
   const [buscar, setBuscar] = useState('');
@@ -52,7 +57,15 @@ export default function OrdenLista() {
           <div className="page-title">Órdenes de Trabajo</div>
           <div className="page-subtitle">Consumos, estimados y costos por orden</div>
         </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          {/* F-24: proyectos con sus OT, para crear una OT desde el proyecto */}
+          <Link className="btn btn-secondary" to="/ordenes/proyectos">Proyectos</Link>
+          {puedeCrear && (
+            <button className="btn btn-primary" id="btn-nueva-ot" onClick={() => setNuevaAbierta(true)}>+ Nueva OT</button>
+          )}
+        </div>
       </div>
+      {nuevaAbierta && <NuevaOT onCerrar={() => setNuevaAbierta(false)} />}
 
       <div id="alert-container"><Alert {...alert} /></div>
 
@@ -101,7 +114,7 @@ export default function OrdenLista() {
                   <td>{o.proyecto_codigo || ''} {o.proyecto_nombre || '—'}</td>
                   <td>{o.area || '—'}</td>
                   <td>{o.responsable || '—'}</td>
-                  <td><span className={`badge ${badgeEstado(o.estado)}`}>{o.estado}</span></td>
+                  <td><span className={`badge ${badgeEstado(o.estado)}`}>{etiqueta(o.estado)}</span></td>
                   <td style={{ textAlign: 'center' }}>{o.total_materiales}</td>
                   <td style={{ textAlign: 'center' }}>{o.con_estimado}</td>
                   <td style={{ textAlign: 'center' }}>{o.con_real}</td>

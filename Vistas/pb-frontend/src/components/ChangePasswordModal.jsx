@@ -3,6 +3,8 @@ import { API } from '../services/api';
 import { useAuth } from '../hooks/useAuth';
 import { useConfirm } from '../hooks/useDialog';
 import { TEMP_PASS_KEY } from '../utils/session';
+import { AvisoCerrable } from './Alert';
+import InputPassword from './InputPassword';
 
 /**
  * Modal "Cambiar contraseña" (sidebar.html) + lógica de layout.js + pre-llenado de dashboard.html.
@@ -87,27 +89,27 @@ export default function ChangePasswordModal({ open, onClose }) {
         </div>
         <div className="modal-body">
           {forced && (
-            <div className="alert alert-warning alert-cambio-obligatorio" style={{ fontSize: 12, marginBottom: 12 }}>
+            <AvisoCerrable className="alert alert-warning alert-cambio-obligatorio" style={{ fontSize: 12, marginBottom: 12 }}>
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" width="14" height="14" style={{ verticalAlign: -2, marginRight: 4 }}>
                 <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
                 <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
               </svg>
               Su contraseña es temporal. Debe cambiarla antes de continuar usando el sistema.
-            </div>
+            </AvisoCerrable>
           )}
           <div className="form-group" style={tempPass ? { display: 'none' } : undefined}>
             <label className="form-label">Contraseña actual</label>
-            <input className="form-control" type="password" id="pass-actual" placeholder="••••••••"
+            <InputPassword className="form-control" id="pass-actual" placeholder="••••••••"
               value={actual} onChange={e => setActual(e.target.value)} />
           </div>
           <div className="form-group">
             <label className="form-label">Nueva contraseña</label>
-            <input className="form-control" type="password" id="pass-nueva" placeholder="Mínimo 8 caracteres"
+            <InputPassword className="form-control" id="pass-nueva" placeholder="Mínimo 8 caracteres"
               value={nueva} onChange={e => setNueva(e.target.value)} onKeyDown={forced ? onEnter : undefined} />
           </div>
           <div className="form-group" style={{ marginBottom: 0 }}>
             <label className="form-label">Confirmar nueva contraseña</label>
-            <input className="form-control" type="password" id="pass-confirmar" placeholder="Repite la contraseña"
+            <InputPassword className="form-control" id="pass-confirmar" placeholder="Repite la contraseña"
               value={confirmar} onChange={e => setConfirmar(e.target.value)} onKeyDown={forced ? onEnter : undefined} />
           </div>
         </div>

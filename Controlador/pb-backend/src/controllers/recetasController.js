@@ -1,6 +1,10 @@
 const { query } = require('../db/pool');
 const { ErrorNegocio, conTransaccion, responderError } = require('../db/tx');
+const { ESTADOS_OT_CERRADA } = require('../db/estadosOT');
 const auditoria = require('./auditoriaController');
+const { ErrorFormula, validarFormula, cantidadPorMedidas } = require('../db/formulas');
+const { MEDIDAS_EJEMPLO, variablesDeMedidas } = require('../config/medidas');
+const { faltaFirma } = require('../middleware/firma');
 
 /**
  * Recetas / plantillas por tipo de puerta (OPUS-19, Req #7; módulo en CU-102, D37).
@@ -21,6 +25,10 @@ const auditoria = require('./auditoriaController');
  * MERMA: material_producto_terminado_merma_estimada se interpreta como FRACCION
  * (0.2 = 20%), que es como estan cargados los datos. La cantidad que se lleva a la
  * OT es cantidad * (1 + merma).
+ *
+ * F-08 (D74): una línea puede llevar una FÓRMULA de la cantidad por puerta según las medidas
+ * de la OT (src/db/formulas.js). Conserva su cantidad fija como referencia de una puerta
+ * estándar: la usan los cálculos desde la venta, donde no hay OT ni medidas (CU-120, CU-122).
  */
 
 const HORAS_EDICION_LIBRE = 24;
@@ -45,7 +53,8 @@ const SQL_MATERIALES = `
     , 4)                                                AS cantidad_con_merma,
     mpt.area_trabajo_id_area                            AS area_id,
     at.area_trabajo_nombre_area                         AS area,
-    (m.es_material_pintura_custom IS TRUE OR m.es_material_pintura_no_custom IS TRUE) AS es_pintura
+    (m.es_material_pintura_custom IS TRUE OR m.es_material_pintura_no_custom IS TRUE) AS es_pintura,
+    mpt.material_producto_terminado_formula             AS formula
   FROM material_producto_terminado mpt
   JOIN material m ON m.material_sku = mpt.material_sku
   LEFT JOIN material_unidad_medida um
@@ -56,6 +65,23 @@ const SQL_MATERIALES = `
   ORDER BY m.material_nombre_material`;
 
 const materialesDe = (db, id, areaId = null) => db.query(SQL_MATERIALES, [id, areaId]).then(r => r.rows);
+
+/**
+ * F-08: cantidad por puerta de una línea, ya con merma. Sin fórmula, la fija. Con fórmula, la
+ * evalúa con las medidas de la OT; sin medidas (o si la fórmula no da para ellas) devuelve
+ * cantidad null y el motivo en `falta`: la OT no recibe un número inventado.
+ */
+function cantidadConMerma(m, medidas) {
+  if (!m.formula) return { cantidad: parseFloat(m.cantidad_con_merma), falta: null };
+  if (!medidas) return { cantidad: null, falta: 'Faltan las medidas de la puerta en la OT' };
+  try {
+    const porPuerta = cantidadPorMedidas(m.formula, medidas);
+    return { cantidad: Math.round(porPuerta * (1 + parseFloat(m.merma)) * 10000) / 10000, falta: null };
+  } catch (e) {
+    if (e instanceof ErrorFormula) return { cantidad: null, falta: e.message };
+    throw e;
+  }
+}
 
 /** Cabecera de la receta con lo que necesita la vista para decidir qué ofrecer. */
 const SQL_CABECERA = `
@@ -137,6 +163,22 @@ async function obtener(req, res) {
   }
 }
 
+/**
+ * GET /api/recetas/probar-formula?formula= — F-08, ayudante del editor de recetas. Solo lee.
+ * Devuelve el resultado por puerta con la puerta de ejemplo y sus medidas derivadas, o 400 con
+ * el error de la fórmula.
+ */
+function probarFormula(req, res) {
+  const formula = String(req.query.formula ?? '');
+  const variables = variablesDeMedidas(MEDIDAS_EJEMPLO);
+  try {
+    res.json({ ...validarFormula(formula), puerta: MEDIDAS_EJEMPLO, variables });
+  } catch (e) {
+    if (e instanceof ErrorFormula) return res.status(400).json({ error: e.message, puerta: MEDIDAS_EJEMPLO, variables });
+    responderError(res, e, 'Error probando la fórmula:');
+  }
+}
+
 const MAX_PUERTAS = 1000;
 
 /**
@@ -169,6 +211,7 @@ async function recetaPorOrden(req, res) {
               ot.producto_terminado_id_producto AS receta_id,
               ot.orden_trabajo_cantidad_puertas AS cantidad_puertas,
               ot.especificaciones_puerta_id_especificacion_puerta AS especificacion_id,
+              ot.orden_trabajo_medidas  AS medidas,
               esp.modelo_puerta         AS modelo,
               esp.producto_terminado_id AS producto_id
        FROM orden_trabajo ot
@@ -184,7 +227,9 @@ async function recetaPorOrden(req, res) {
     const puertas = Number(puertasPedidas ?? orden.cantidad_puertas ?? 1);
     const base = {
       orden: { id: orden.id, estado: orden.estado, modelo: orden.modelo, area_id: orden.area_id, area: orden.area,
-               receta_id: orden.receta_id, cantidad_puertas: orden.cantidad_puertas },
+               receta_id: orden.receta_id, cantidad_puertas: orden.cantidad_puertas, medidas: orden.medidas,
+               // F-08: marco, alojamiento, hoja y bastidor calculados con las reglas de config/medidas.js
+               derivadas: orden.medidas ? variablesDeMedidas(orden.medidas) : null },
       puertas,
     };
 
@@ -213,9 +258,12 @@ async function recetaPorOrden(req, res) {
           ' Elija otra receta.'
       });
     }
-    const materiales = (await materialesDe({ query }, recetaId, orden.area_id)).map(m => ({
-      ...m, cantidad_total: Math.round(parseFloat(m.cantidad_con_merma) * puertas * 10000) / 10000,
-    }));
+    // F-08: una línea por fórmula sin medidas va con cantidad_total null y el motivo en `falta_medida`
+    const materiales = (await materialesDe({ query }, recetaId, orden.area_id)).map(m => {
+      const { cantidad, falta } = cantidadConMerma(m, orden.medidas);
+      return { ...m, falta_medida: falta,
+        cantidad_total: cantidad == null ? null : Math.round(cantidad * puertas * 10000) / 10000 };
+    });
     if (materiales.length === 0) {
       return res.json({
         ...base, producto, materiales: [], origen,
@@ -233,15 +281,18 @@ async function recetaPorOrden(req, res) {
    CU-102: validaciones compartidas por crear y editar
    ══════════════════════════════════════════════════════════════════════ */
 
-/** Un insumo de la receta quedó igual que el guardado (misma cantidad, merma y área). */
+/** Un insumo de la receta quedó igual que el guardado (misma cantidad, merma, área y fórmula). */
 const sinCambios = (i, a) => !!a && Math.abs(i.cantidad - a.cantidad) < 1e-9
-  && Math.abs(i.merma - a.merma) < 1e-9 && String(i.areaId) === String(a.areaId);
+  && Math.abs(i.merma - a.merma) < 1e-9 && String(i.areaId) === String(a.areaId)
+  && (i.formula ?? null) === (a.formula ?? null);
 
 /**
  * Valida el lote COMPLETO antes de escribir (lección de OPUS-4): o se guarda todo o
  * nada. Devuelve [{ sku, cantidad, merma, areaId }] o lanza 400 con todos los errores.
  *  - Exc 1: el SKU existe, está activo y no es herramienta (una herramienta no se consume).
  *  - Exc 3: cantidad > 0 (el CHECK de la BD permite 0). Merma: fracción entre 0 y 1.
+ *  - F-08: `formula` opcional; si viene, debe entenderse y dar un número no negativo con la
+ *    puerta de ejemplo. La cantidad sigue siendo obligatoria (referencia de una puerta estándar).
  *  - Sin repetidos; área de producción activa y obligatoria (R1).
  *  - Sesión 15: `actuales` (Map sku → { cantidad, merma, areaId } de la receta guardada)
  *    permite CONSERVAR un material inactivo que ya estaba, sin cambios; igual que la OT
@@ -261,6 +312,7 @@ async function validarMateriales(client, materiales, actuales = new Map()) {
     const cantidad = parseFloat(item?.cantidad_base);
     const merma    = item?.merma == null || item.merma === '' ? 0 : parseFloat(item.merma);
     const areaTxt  = item?.area_id == null || item.area_id === '' ? null : String(item.area_id);
+    const formula  = item?.formula == null ? '' : String(item.formula).trim();
 
     if (!sku) { errores.push({ fila, sku: null, campo: 'sku', error: 'Falta el producto' }); return; }
     if (isNaN(cantidad) || cantidad <= 0) {
@@ -285,12 +337,19 @@ async function validarMateriales(client, materiales, actuales = new Map()) {
       errores.push({ fila, sku, campo: 'area_id', error: 'El área no es válida' });
       return;
     }
+    if (formula) {
+      try { validarFormula(formula); } catch (e) {
+        if (!(e instanceof ErrorFormula)) throw e;
+        errores.push({ fila, sku, campo: 'formula', error: `Fórmula no válida: ${e.message}` });
+        return;
+      }
+    }
     if (vistos.has(sku)) {
       errores.push({ fila, sku, campo: 'sku', error: 'El producto viene repetido en la receta' });
       return;
     }
     vistos.add(sku);
-    items.push({ fila, sku, cantidad, merma, areaId: areaTxt });
+    items.push({ fila, sku, cantidad, merma, areaId: areaTxt, formula: formula || null });
   });
 
   if (items.length > 0) {
@@ -366,21 +425,22 @@ async function validarCabecera(client, { nombre, codigo }, excluirId = null) {
 }
 
 async function insertarMateriales(client, id, items) {
-  for (const { sku, cantidad, merma, areaId } of items) {
+  for (const { sku, cantidad, merma, areaId, formula } of items) {
     await client.query(
       `INSERT INTO material_producto_terminado
          (material_sku, producto_terminado_id_producto,
           material_producto_terminado_cantidad_estimada,
-          material_producto_terminado_merma_estimada, area_trabajo_id_area)
-       VALUES ($1, $2, $3, $4, $5)`,
-      [sku, id, cantidad, merma, areaId]
+          material_producto_terminado_merma_estimada, area_trabajo_id_area,
+          material_producto_terminado_formula)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [sku, id, cantidad, merma, areaId, formula]
     );
   }
 }
 
 /**
  * POST /api/recetas — CU-102, gerencia y jop.
- * Body: { nombre, codigo?, tipo?, materiales: [{ sku, cantidad_base, merma?, area_id? }] }
+ * Body: { nombre, codigo?, tipo?, materiales: [{ sku, cantidad_base, merma?, area_id?, formula? }] }
  */
 async function crear(req, res) {
   const { tipo, materiales } = req.body || {};
@@ -410,7 +470,8 @@ async function crear(req, res) {
  * Reemplaza la lista de materiales y, si vienen, el nombre, código y tipo (patrón
  * de presencia: un campo omitido se conserva).
  * Regla de edición: dentro de las 24 h desde la creación, gerencia y jop; después
- * solo gerencia y con `motivo`. Editar no cambia la fecha de creación. Una receta
+ * solo gerencia, con `motivo` y con la firma de un gerente (F-11, receta_vigente).
+ * Editar no cambia la fecha de creación. Una receta
  * inactiva no se edita: se reactiva o se duplica.
  * Body: { materiales, nombre?, codigo?, tipo?, motivo? }
  */
@@ -444,15 +505,20 @@ async function actualizar(req, res) {
             campo: 'motivo', codigo: 'MOTIVO_REQUERIDO',
           });
         }
+        // F-11: fuera de plazo pide la firma de un gerente. Va antes de escribir: el 428 no toca nada.
+        const falta = faltaFirma(req, 'receta_vigente');
+        if (falta) throw new ErrorNegocio(428, falta);
       }
 
       /* ── Fase 1: validar todo antes de tocar la tabla ── */
       const { rows: guardados } = await client.query(
         `SELECT material_sku AS sku, material_producto_terminado_cantidad_estimada::float AS cantidad,
-                COALESCE(material_producto_terminado_merma_estimada, 0)::float AS merma, area_trabajo_id_area AS area
+                COALESCE(material_producto_terminado_merma_estimada, 0)::float AS merma, area_trabajo_id_area AS area,
+                material_producto_terminado_formula AS formula
          FROM material_producto_terminado WHERE producto_terminado_id_producto = $1`, [id]
       );
-      const actuales = new Map(guardados.map(g => [g.sku, { cantidad: g.cantidad, merma: g.merma, areaId: g.area }]));
+      const actuales = new Map(guardados.map(g =>
+        [g.sku, { cantidad: g.cantidad, merma: g.merma, areaId: g.area, formula: g.formula }]));
       const items = await validarMateriales(client, body.materiales, actuales);
       const cambiaCabecera = 'nombre' in body || 'codigo' in body || 'tipo' in body;
       const cab = cambiaCabecera
@@ -570,9 +636,9 @@ async function duplicar(req, res) {
       const { rowCount } = await client.query(
         `INSERT INTO material_producto_terminado
            (material_sku, producto_terminado_id_producto, material_producto_terminado_cantidad_estimada,
-            material_producto_terminado_merma_estimada, area_trabajo_id_area)
+            material_producto_terminado_merma_estimada, area_trabajo_id_area, material_producto_terminado_formula)
          SELECT material_sku, $2, material_producto_terminado_cantidad_estimada,
-                material_producto_terminado_merma_estimada, area_trabajo_id_area
+                material_producto_terminado_merma_estimada, area_trabajo_id_area, material_producto_terminado_formula
          FROM material_producto_terminado WHERE producto_terminado_id_producto = $1`,
         [id, nuevo]
       );
@@ -667,12 +733,12 @@ async function cargarEnOT(req, res) {
       }
 
       const { rows: ot } = await client.query(
-        `SELECT orden_trabajo_estado AS estado, area_trabajo_id_area AS area_id
+        `SELECT orden_trabajo_estado AS estado, area_trabajo_id_area AS area_id, orden_trabajo_medidas AS medidas
          FROM orden_trabajo WHERE orden_trabajo_id_orden = $1`,
         [otId]
       );
       if (ot.length === 0) throw new ErrorNegocio(404, { error: 'Orden de trabajo no encontrada' });
-      if (['finalizada', 'completada', 'cerrada', 'cancelada'].includes(String(ot[0].estado).toLowerCase())) {
+      if (ESTADOS_OT_CERRADA.includes(String(ot[0].estado).toLowerCase())) {
         throw new ErrorNegocio(400, { error: 'No se pueden cargar estimaciones en una orden cerrada o cancelada' });
       }
 
@@ -687,7 +753,13 @@ async function cargarEnOT(req, res) {
       let agregados = 0, actualizados = 0, omitidos = 0;
 
       for (const m of receta) {
-        const cantidad = parseFloat(m.cantidad_con_merma);
+        // F-08: una línea por fórmula sin medidas no se carga (no se inventa un número)
+        const { cantidad, falta } = cantidadConMerma(m, ot[0].medidas);
+        if (falta) {
+          omitidos++;
+          resultados.push({ sku: m.sku, nombre: m.nombre, resultado: 'omitido', cantidad: null, motivo: falta });
+          continue;
+        }
 
         const { rows: previo } = await client.query(
           `SELECT material_orden_trabajo_consumo_estimado AS estimado
@@ -752,4 +824,7 @@ async function cargarEnOT(req, res) {
   }
 }
 
-module.exports = { listar, obtener, recetaPorOrden, crear, actualizar, duplicar, sugerenciaDuplicado, cambiarEstado, cargarEnOT };
+module.exports = {
+  listar, obtener, recetaPorOrden, crear, actualizar, duplicar, sugerenciaDuplicado, cambiarEstado, cargarEnOT,
+  probarFormula,
+};

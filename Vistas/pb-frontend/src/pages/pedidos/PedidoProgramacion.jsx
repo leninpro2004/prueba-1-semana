@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { API } from '../../services/api';
 import { usePageTitle } from '../../contexts/TitleContext';
 import Alert, { useAlert } from '../../components/Alert';
+import BotonExportar from '../../components/BotonExportar';
 
 /** Programación Semanal de Instalaciones — conversión 1:1 de pedidos/programacion.html */
 export default function PedidoProgramacion() {
@@ -17,7 +18,7 @@ export default function PedidoProgramacion() {
   const [editEmpleado, setEditEmpleado] = useState(null); // id de OT en edicion
   const [resumen, setResumen] = useState(null);
   const [programacion, setProgramacion] = useState(null); // null = Cargando…; 'sin' = mensaje del backend
-  const [menuOpen, setMenuOpen] = useState(false);
+  const [exportando, setExportando] = useState(null);   // B-18: 'CSV' | 'PDF' mientras se descarga
   const [falt, setFalt] = useState(null); // null | { loading, otId } | { error } | { otId, cancelada } | { otId, materiales }
 
   const params = { rango, ...(semanaInicio && { semana_inicio: semanaInicio }) };
@@ -60,14 +61,6 @@ export default function PedidoProgramacion() {
     }
   };
 
-  // Cerrar menú exportar al hacer clic fuera
-  useEffect(() => {
-    if (!menuOpen) return;
-    const close = () => setMenuOpen(false);
-    document.addEventListener('click', close);
-    return () => document.removeEventListener('click', close);
-  }, [menuOpen]);
-
   // CU-133: Ver detalle de faltantes por OT
   const verFaltantes = async (otId) => {
     setFalt({ loading: true, otId });
@@ -83,7 +76,7 @@ export default function PedidoProgramacion() {
 
   // CU-134: Exportar CSV / PDF
   const exportar = async (fn, nombre, tipo) => {
-    setMenuOpen(false);
+    setExportando(tipo);
     try {
       const resp = await fn();
       if (!resp.ok) {
@@ -101,8 +94,13 @@ export default function PedidoProgramacion() {
       showAlert('success', `Archivo ${tipo} exportado correctamente`);
     } catch (err) {
       showAlert('warning', 'Error al exportar: ' + err.message + '. Se recomienda reintentar la exportación.');
+    } finally {
+      setExportando(null);
     }
   };
+  // B-18: null mientras carga; 0 si la semana no tiene OT
+  const filasExportables = programacion === null ? null : programacion === 'sin' ? 0 : programacion.length;
+  const archivo = (ext) => `programacion_${periodo?.desde || ''}_${periodo?.hasta || ''}.${ext}`;
 
   const todoCompleto = falt?.materiales?.every(m => {
     const est = parseFloat(m.estimado || 0);
@@ -127,18 +125,11 @@ export default function PedidoProgramacion() {
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" width="14" height="14"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>
             Actualizar
           </button>
-          <div style={{ position: 'relative', display: 'inline-block' }}>
-            <button className="btn btn-secondary" id="btn-exportar" onClick={e => { e.stopPropagation(); setMenuOpen(o => !o); }}>
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" width="14" height="14"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-              Exportar ▾
-            </button>
-            {menuOpen && (
-              <div id="export-menu" style={{ position: 'absolute', top: '100%', right: 0, marginTop: 4, background: 'var(--white)', border: '1px solid var(--border)', borderRadius: 8, boxShadow: '0 4px 12px rgba(0,0,0,.1)', zIndex: 10, minWidth: 160, overflow: 'hidden' }}>
-                <button className="btn btn-ghost" style={{ width: '100%', textAlign: 'left', borderRadius: 0, padding: '10px 16px', fontSize: 13 }} onClick={() => exportar(() => API.reportes.exportarProgramacion(params), `programacion_${periodo?.desde || ''}_${periodo?.hasta || ''}.csv`, 'CSV')}>📄 Exportar como CSV</button>
-                <button className="btn btn-ghost" style={{ width: '100%', textAlign: 'left', borderRadius: 0, padding: '10px 16px', fontSize: 13, borderTop: '1px solid var(--border)' }} onClick={() => exportar(() => API.reportes.exportarProgramacionPDF(params), `programacion_${periodo?.desde || ''}_${periodo?.hasta || ''}.pdf`, 'PDF')}>📕 Exportar como PDF</button>
-              </div>
-            )}
-          </div>
+          {/* B-18: los mismos botones que los demás reportes con CSV y PDF */}
+          <BotonExportar id="btn-exportar" filas={filasExportables} cargando={exportando === 'CSV'}
+            onClick={() => exportar(() => API.reportes.exportarProgramacion(params), archivo('csv'), 'CSV')} />
+          <BotonExportar id="btn-exportar-pdf" filas={filasExportables} cargando={exportando === 'PDF'} etiqueta="Exportar PDF"
+            onClick={() => exportar(() => API.reportes.exportarProgramacionPDF(params), archivo('pdf'), 'PDF')} />
         </div>
       </div>
 

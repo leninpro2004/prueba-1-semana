@@ -271,6 +271,8 @@ CREATE TABLE material_producto_terminado (
     material_producto_terminado_merma_estimada     NUMERIC(12,4),
     -- CU-102 / R1: área donde se consume el insumo, obligatoria (la OT carga solo los de su área)
     area_trabajo_id_area                           BIGINT        NOT NULL,
+    -- F-08 (DDL-01): formula de la cantidad por puerta segun las medidas de la OT; NULL = cantidad fija
+    material_producto_terminado_formula            TEXT,
     CONSTRAINT pk_mat_prod PRIMARY KEY (material_sku, producto_terminado_id_producto),
     CONSTRAINT ck_mat_prod_cant  CHECK (material_producto_terminado_cantidad_estimada >= 0),
     CONSTRAINT ck_mat_prod_merma CHECK (material_producto_terminado_merma_estimada >= 0)
@@ -561,7 +563,9 @@ CREATE TABLE usuario (
     CONSTRAINT pk_usuario PRIMARY KEY (usuario_id_usuario),
     CONSTRAINT uk_usuario_username UNIQUE (usuario_username),
     CONSTRAINT uk_usuario_correo   UNIQUE (usuario_correo),
-    CONSTRAINT uk_usuario_rut      UNIQUE (usuario_rut_usuario)
+    CONSTRAINT uk_usuario_rut      UNIQUE (usuario_rut_usuario),
+    -- D68: un solo valor por estado (la pantalla de Usuarios guardaba 'activa')
+    CONSTRAINT ck_usuario_estado_cuenta CHECK (usuario_estado_cuenta IN ('activo', 'inactivo'))
 );
 
 CREATE TABLE usuario_contrasena (
@@ -586,6 +590,8 @@ CREATE TABLE orden_trabajo (
     -- R1: receta cargada (el id es la version) y cantidad de puertas
     producto_terminado_id_producto                   BIGINT,
     orden_trabajo_cantidad_puertas                   INTEGER,
+    -- F-08 (DDL-01): medidas de la puerta (vano en mm, hojas, MDF, perfil del marco); las valida el backend
+    orden_trabajo_medidas                            JSONB,
     CONSTRAINT pk_orden_trab PRIMARY KEY (orden_trabajo_id_orden),
     CONSTRAINT ck_ot_cantidad_puertas CHECK (orden_trabajo_cantidad_puertas > 0)
 );
@@ -1169,6 +1175,8 @@ COMMENT ON COLUMN orden_trabajo.proyecto_id_proyecto IS 'FK blanda hacia terreno
 COMMENT ON COLUMN orden_trabajo.especificaciones_puerta_id_especificacion_puerta IS 'FK blanda hacia terreno.especificacion_puerta';
 COMMENT ON COLUMN orden_trabajo.producto_terminado_id_producto IS 'R1: receta cargada en la OT (el id es la version)';
 COMMENT ON COLUMN orden_trabajo.orden_trabajo_cantidad_puertas IS 'R1: cantidad de puertas para la que se cargo la receta';
+COMMENT ON COLUMN orden_trabajo.orden_trabajo_medidas IS 'F-08: medidas de la puerta {vano_ancho_mm, vano_alto_mm, hojas, mdf, perfil_marco_mm, origen}. Las valida el backend';
+COMMENT ON COLUMN material_producto_terminado.material_producto_terminado_formula IS 'F-08: formula de la cantidad por puerta segun las medidas de la OT. NULL = cantidad fija';
 COMMENT ON COLUMN reserva_inventario.proyecto_id_proyecto IS 'FK blanda hacia terreno.proyecto';
 COMMENT ON COLUMN alerta_faltante_pedido.proyecto_id_proyecto IS 'FK blanda hacia terreno.proyecto';
 COMMENT ON COLUMN usuario.empleado_rut_empleado IS 'FK blanda hacia finanzas.empleado — sin constraint cross-schema';

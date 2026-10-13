@@ -3,6 +3,7 @@ import { Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../hooks/useAuth';
 import { getInitials, getRoleLabel } from '../utils/user';
 import { COLLAPSE_KEY } from '../utils/session';
+import { LOGO_SIMBOLO } from '../config/marca';
 
 /**
  * Sidebar — conversión de shared/sidebar.html + lógica de layout.js.
@@ -45,7 +46,7 @@ export default function Sidebar({ mobileOpen, onOpenApodo, onOpenPass }) {
 
       {/* Logo */}
       <div className="sidebar-logo">
-        <div className="sidebar-logo-icon">PB</div>
+        <div className="sidebar-logo-icon con-imagen"><img src={LOGO_SIMBOLO} alt="" /></div>
         <div className="sidebar-logo-text">
           <div className="sidebar-logo-name">Puertas Blindadas</div>
           <div className="sidebar-logo-sub">Sistema de Inventario</div>
@@ -136,12 +137,13 @@ export default function Sidebar({ mobileOpen, onOpenApodo, onOpenPass }) {
           <span className="sidebar-item-label">Proveedores</span>
         </Link>
 
-        <Link className={itemClass('pedidos')} to="/pedidos/checklist" data-tooltip="Pedidos">
+        {/* Sesión 15b: "Pedidos" se confundía con los pedidos de instalación (por venta) */}
+        <Link className={itemClass('pedidos')} to="/pedidos/checklist" data-tooltip="Checklist de OT">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
             <path d="M9 11l3 3L22 4"/>
             <path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/>
           </svg>
-          <span className="sidebar-item-label">Pedidos</span>
+          <span className="sidebar-item-label">Checklist de OT</span>
         </Link>
 
         {/* CU-120: pedidos de instalación (gerencia y jop, como el backend) */}
@@ -153,7 +155,7 @@ export default function Sidebar({ mobileOpen, onOpenApodo, onOpenPass }) {
               <circle cx="5.5" cy="18.5" r="2.5"/>
               <circle cx="18.5" cy="18.5" r="2.5"/>
             </svg>
-            <span className="sidebar-item-label">Instalaciones</span>
+            <span className="sidebar-item-label">Pedidos de instalación</span>
           </Link>
         )}
 
@@ -207,7 +209,7 @@ export default function Sidebar({ mobileOpen, onOpenApodo, onOpenPass }) {
           <span className="sidebar-item-label">Pinturas</span>
         </Link>
 
-        <Link className={itemClass('reportes')} to="/reportes/movimientos" data-tooltip="Reportes">
+        <Link className={itemClass('reportes')} to="/reportes" data-tooltip="Reportes">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
             <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
             <polyline points="14 2 14 8 20 8"/>
@@ -245,8 +247,20 @@ export default function Sidebar({ mobileOpen, onOpenApodo, onOpenPass }) {
               </svg>
               <span className="sidebar-item-label">Usuarios</span>
             </Link>
-            {/* CU-108: el backend lo restringe a gerencia y administrador */}
-            {['gerencia', 'administrador'].includes(user?.rol) && (
+            {/* B-14: catálogos, solo gerencia (el backend también lo limita) */}
+            {user?.rol === 'gerencia' && (
+              <Link className={itemClass('catalogos')} to="/catalogos" data-tooltip="Catálogos">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+                  <path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4z"/>
+                  <line x1="14" y1="17" x2="20" y2="17"/>
+                  <line x1="17" y1="14" x2="17" y2="20"/>
+                </svg>
+                <span className="sidebar-item-label">Catálogos</span>
+              </Link>
+            )}
+            {/* CU-108: el backend lo restringe a gerencia y administrador. F-07 (#23): fuera del menú en
+                producción; la página sigue disponible por URL (/integracion) */}
+            {import.meta.env.DEV && ['gerencia', 'administrador'].includes(user?.rol) && (
               <Link className={itemClass('integracion')} to="/integracion" data-tooltip="Integración entre módulos">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
                   <rect x="2" y="3" width="8" height="8" rx="1"/>
@@ -280,7 +294,7 @@ export default function Sidebar({ mobileOpen, onOpenApodo, onOpenPass }) {
         >
           <div className="sidebar-avatar" id="sidebar-avatar">{getInitials(user)}</div>
           <div className="sidebar-user-info">
-            <div className="sidebar-user-name" id="sidebar-user-name">{user?.username || user?.nombre}</div>
+            <div className="sidebar-user-name" id="sidebar-user-name">{user?.apodo || user?.username || user?.nombre}</div>
             <div className="sidebar-user-role" id="sidebar-user-role">{getRoleLabel(user)}</div>
           </div>
         </div>

@@ -2,6 +2,7 @@ const express = require('express');
 const router  = express.Router();
 const ctrl    = require('../controllers/recetasController');
 const { authMiddleware, soloOperativo } = require('../middleware/auth');
+const { requiereFirma } = require('../middleware/firma');
 
 router.use(authMiddleware);
 
@@ -17,14 +18,15 @@ function soloGerenciaOJop(req, res, next) {
 // Las rutas fijas van ANTES de las parametrizadas: /por-orden/:otId no debe
 // caer en /:id (misma precaucion que en herramientas y seguimiento de pinturas).
 router.get('/por-orden/:otId', ctrl.recetaPorOrden);
+router.get('/probar-formula', ctrl.probarFormula);   // F-08: ayudante del editor, solo lee
 router.get('/',               ctrl.listar);
 router.get('/:id',            ctrl.obtener);
 router.get('/:id/sugerencia-duplicado', soloGerenciaOJop, ctrl.sugerenciaDuplicado);   // CU-102
 
 router.post('/',                         soloGerenciaOJop, ctrl.crear);        // CU-102
 router.post('/:id/duplicar',             soloGerenciaOJop, ctrl.duplicar);     // CU-102 Exc 2
-router.put('/:id/estado',                soloGerenciaOJop, ctrl.cambiarEstado); // CU-102
-router.put('/:id',                       soloGerenciaOJop, ctrl.actualizar);
+router.put('/:id/estado',                soloGerenciaOJop, requiereFirma('receta_vigente'), ctrl.cambiarEstado); // CU-102
+router.put('/:id',                       soloGerenciaOJop, ctrl.actualizar);   // F-11: firma fuera de las 24 h (controller)
 router.post('/:id/cargar-en-ot/:otId',   soloOperativo,    ctrl.cargarEnOT);
 
 module.exports = router;

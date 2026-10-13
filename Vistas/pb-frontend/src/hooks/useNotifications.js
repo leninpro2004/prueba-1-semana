@@ -2,14 +2,27 @@ import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { API } from '../services/api';
 
-/** Mapeo tipo/origen → ruta React (antes rutas .html en layout.js). */
+/**
+ * Pantalla a la que lleva el clic en una notificación.
+ * B-06: el backend guarda la ruta exacta en `origen` (empieza con "/"), por ejemplo el conteo o el
+ * pedido de instalación puntual. Las notificaciones guardadas antes no la traen y usan el mapa por tipo.
+ */
 export function obtenerDestinoNotif(n) {
+  const ruta = n.origen || '';
+  if (ruta.startsWith('/') && !ruta.startsWith('//')) return ruta;   // ruta interna ("//" sería otro sitio)
   const tipo = (n.tipo || '').toLowerCase();
   const origen = (n.origen || '').toLowerCase();
-  // CU-83: la programación de activación/desactivación de cuentas vive en Usuarios,
-  // no en Reportes > Programación (el "programacion" genérico de más abajo la confundía).
-  if (tipo === 'programacion_desactivacion' || tipo === 'programacion_activacion')
+  // CU-83 y B-06: las programaciones de cuentas (también la ya ejecutada) viven en Usuarios,
+  // no en Reportes > Programación (el "programacion" genérico de más abajo las confundía).
+  if (tipo === 'programacion_desactivacion' || tipo === 'programacion_activacion' || tipo === 'programacion_ejecutada')
     return '/usuarios';
+  // B-06: tipos que antes no llevaban a ninguna parte o llevaban a otra pantalla
+  if (tipo === 'faltante_retiro') return '/instalacion';
+  if (tipo === 'ubicacion_incorrecta') return '/alertas';
+  if (tipo === 'diferencia_inventario') return '/conteos';
+  if (tipo === 'insumo_especial') return '/alertas/faltantes?tab=especiales';
+  if (tipo === 'solicitud_compra' || tipo === 'alerta_faltante') return '/alertas/faltantes';
+  if (tipo === 'seguridad' || tipo === 'extraccion_masiva') return '/usuarios?tab=auditoria';
   if (tipo.includes('alerta_stock') || tipo.includes('stock_bajo') || tipo.includes('faltante'))
     return '/alertas';
   if (tipo.includes('merma'))

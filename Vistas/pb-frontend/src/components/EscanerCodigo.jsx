@@ -75,7 +75,7 @@ export default function EscanerCodigo({ onProducto, autoFocus = true, permitirIn
 
   return (
     <div className="card" style={{ marginBottom: 16 }}>
-      <div className="section-label">Lectura por escáner (CU-30)</div>
+      <div className="section-label">Lectura por escáner</div>
       <div className="form-group" style={{ marginBottom: aviso ? 10 : 0 }}>
         <label className="form-label" htmlFor="escaner-codigo">Código de barras o SKU</label>
         <div style={{ display: 'flex', gap: 8 }}>

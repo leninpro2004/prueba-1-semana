@@ -154,7 +154,7 @@ describe('Rechazos del conteo (CU-37)', () => {
 
   test('el rol tecnico no puede contar (403)', async () => {
     const base = await levantar();
-    const token = jwt.sign({ id: 2, username: 'tec', nombre: 'Tec', rol: 'tecnico' }, process.env.JWT_SECRET, { expiresIn: '1h' });
+    const token = jwt.sign({ id: 3, username: 'tecnico.test', nombre: 'Tec', rol: 'tecnico' }, process.env.JWT_SECRET, { expiresIn: '1h' });
     const r = await fetch(base + '/api/conteos', { headers: { Authorization: `Bearer ${token}` } });
     assert.equal(r.status, 403);
   });
@@ -491,7 +491,7 @@ describe('Alertas por diferencia de inventario (CU-57)', () => {
     assert.equal((await generarAlertas(sinProcesar.body.id)).status, 400);
 
     const base = await levantar();
-    const token = jwt.sign({ id: 2, username: 'tec', nombre: 'Tec', rol: 'tecnico' }, process.env.JWT_SECRET, { expiresIn: '1h' });
+    const token = jwt.sign({ id: 3, username: 'tecnico.test', nombre: 'Tec', rol: 'tecnico' }, process.env.JWT_SECRET, { expiresIn: '1h' });
     const r = await fetch(`${base}/api/conteos/${id}/alertas`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } });
     assert.equal(r.status, 403);
   });

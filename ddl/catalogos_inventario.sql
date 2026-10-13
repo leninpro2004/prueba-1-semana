@@ -39,7 +39,8 @@ OVERRIDING SYSTEM VALUE VALUES
 ON CONFLICT DO NOTHING;
 SELECT setval(pg_get_serial_sequence('inventario.movimiento_inventario_clasificacion_salida', 'movimiento_inventario_clasificacion_salida_id_clasificacion_sal'), (SELECT MAX(movimiento_inventario_clasificacion_salida_id_clasificacion_sal) FROM movimiento_inventario_clasificacion_salida));
 
--- Motivos (el código busca devolucion_consumo, despacho_venta, traslado_bodega, compra_proveedor, reverso_autorizado)
+-- Motivos (el código busca devolucion_consumo, despacho_venta, traslado_bodega, compra_proveedor, reverso_autorizado,
+-- carga_inicial)
 INSERT INTO movimiento_inventario_motivo_movimiento (movimiento_inventario_motivo_movimiento_id_motivo_movimiento, movimiento_inventario_motivo_movimiento_nombre, movimiento_inventario_clasificacion_salida_id_clasificacion_sal)
 OVERRIDING SYSTEM VALUE VALUES
   ('1', 'compra_proveedor', NULL),
@@ -52,7 +53,9 @@ OVERRIDING SYSTEM VALUE VALUES
   ('8', 'despacho_venta', '1'),
   ('9', 'traslado_bodega', '5'),
   ('10', 'perdida_herramienta', '2'),
-  ('11', 'baja_herramienta', '2')
+  ('11', 'baja_herramienta', '2'),
+  ('12', 'carga_inicial', NULL),  -- F-03 (D78): stock inicial cargado con el importador
+  ('13', 'compra_caja_chica', NULL)   -- F-23 (D86): material comprado con caja chica (referencia CC-<id del gasto>)
 ON CONFLICT DO NOTHING;
 SELECT setval(pg_get_serial_sequence('inventario.movimiento_inventario_motivo_movimiento', 'movimiento_inventario_motivo_movimiento_id_motivo_movimiento'), (SELECT MAX(movimiento_inventario_motivo_movimiento_id_motivo_movimiento) FROM movimiento_inventario_motivo_movimiento));
 

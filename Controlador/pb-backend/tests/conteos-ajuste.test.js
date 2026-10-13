@@ -1,6 +1,6 @@
 const { test, before, after, beforeEach, describe } = require('node:test');
 const assert = require('node:assert/strict');
-const { api, bajar, autorizacion } = require('./helpers/api');
+const { api, bajar } = require('./helpers/api');
 const db = require('./helpers/db');
 const { stockAFecha, consumoNeto } = require('../src/db/historico');
 
@@ -114,7 +114,7 @@ describe('Rechazos: no se mueve nada', () => {
     assert.match(otra.body.error, /Ya se ajustó/);
 
     const [m] = await movimientosDe(id);
-    const rev = await api('POST', `/api/movimientos/${m.id}/revertir`, { body: { autorizacion: autorizacion(m.id) } });
+    const rev = await api('POST', `/api/movimientos/${m.id}/revertir`);
     assert.equal(rev.status, 200, JSON.stringify(rev.body));
     assert.deepEqual(await db.stockDe('MAT-FIFO'), { fisica: 30, reservada: 5 });
 

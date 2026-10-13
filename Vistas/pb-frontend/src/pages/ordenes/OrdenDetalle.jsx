@@ -1,16 +1,17 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { API } from '../../services/api';
-import { formatMoney } from '../../utils/format';
+import { formatMoney, etiqueta } from '../../utils/format';
 import { useAuth } from '../../hooks/useAuth';
-import { useConfirm } from '../../hooks/useDialog';
+import { useConfirm, usePrompt } from '../../hooks/useDialog';
 import { usePageTitle } from '../../contexts/TitleContext';
 import Alert, { useAlert } from '../../components/Alert';
 import TabDesviaciones from './TabDesviaciones';
 import TabConsumo from './TabConsumo';
 import { ocultaMontos } from '../../utils/user';
+import NombreCorto from '../../components/NombreCorto';   // F-17
 
-// R1: Consumo reemplaza a Consumos, Estimados y Registrar consumo (docs/sprint/decisiones.md)
+// R1: Consumo reemplaza a Consumos, Estimados y Registrar consumo (docs/incremento-3-4/decisiones.md)
 const TABS = [['consumo', 'Consumo'], ['movimientos', 'Movimientos'], ['desviaciones', 'Desviaciones']];   // CU-103
 // Estados en que la OT ya no admite finalizarse (mismo criterio que el backend)
 const ESTADOS_CERRADOS = ['cancelada', 'finalizada', 'completada', 'cerrada'];
@@ -25,6 +26,7 @@ export default function OrdenDetalle() {
   const { user } = useAuth();
   const { alert, showAlert } = useAlert();
   const confirm = useConfirm();
+  const prompt = usePrompt();
 
   const [tab, setTab] = useState('consumo');
   const [data, setData] = useState(null);       // respuesta de consumos()
@@ -87,6 +89,42 @@ export default function OrdenDetalle() {
     }
   };
 
+  // B-03: cambiar el responsable (solo gerencia, OT abierta)
+  const [resp, setResp] = useState(null);   // null | { usuarios, nuevo }
+  const abrirCambioResponsable = async () => {
+    try {
+      const o = await API.ordenesTrabajo.opcionesNueva();
+      setResp({ usuarios: o.usuarios || [], nuevo: String(data?.orden?.responsable_id ?? '') });
+    } catch (err) { showAlert('danger', err.message); }
+  };
+  const guardarResponsable = async () => {
+    try {
+      const r = await API.ordenesTrabajo.cambiarResponsable(otId, Number(resp.nuevo));
+      showAlert('success', r.message);
+      setResp(null);
+      cargarConsumos();
+    } catch (err) { showAlert('danger', err.message); }
+  };
+
+  // F-28: anular (nunca borrar). El backend rechaza si hay consumo vigente y libera las reservas.
+  const anularOT = async () => {
+    const motivo = await prompt(
+      `Indique por qué se anula la OT #${otId}. Queda como "Cancelada" con su historial; sus reservas se liberan.`,
+      'Anular orden de trabajo', 'Ej: se creó con el área equivocada');
+    if (motivo == null) return;
+    if (!motivo.trim()) { showAlert('danger', 'Indique el motivo de la anulación.'); return; }
+    if (!(await confirm(`¿Anular la orden de trabajo #${otId}? No se puede deshacer.`, 'Anular orden de trabajo'))) return;
+    try {
+      const r = await API.ordenesTrabajo.anular(otId, motivo.trim());
+      // 409 (apiFetch lo devuelve, no lo lanza): tiene consumo; el mensaje dice qué devolver primero
+      if (r?.codigo) { showAlert('danger', r.error); return; }
+      showAlert('success', r.message);
+      cargarConsumos();
+    } catch (err) {
+      showAlert('danger', err.message);
+    }
+  };
+
   const cambiarTab = (t) => setTab(t);
 
   // OPUS-9: los filtros se aplican solos al cambiarlos (mismo criterio que SONNET-1)
@@ -119,7 +157,25 @@ export default function OrdenDetalle() {
       <div className="page-header">
         <div>
           <div className="page-title">Orden de Trabajo <span id="ot-id">{data ? '#' + otId : ''}</span></div>
-          <div className="page-subtitle" id="ot-estado">{data ? 'Estado: ' + (data.orden?.estado || '—') : ''}</div>
+          <div className="page-subtitle" id="ot-estado">{data ? 'Estado: ' + etiqueta(data.orden?.estado) : ''}</div>
+          {data && (
+            <div className="page-subtitle" id="ot-responsable" style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              Responsable: <strong>{data.orden?.responsable || '—'}</strong>
+              {user?.rol === 'gerencia' && estadoOT && !ESTADOS_CERRADOS.includes(estadoOT) && !resp && (
+                <button className="btn btn-ghost btn-sm" id="btn-cambiar-responsable" onClick={abrirCambioResponsable}>Cambiar</button>
+              )}
+              {resp && (
+                <>
+                  <select className="form-control" id="ot-nuevo-responsable" style={{ width: 'auto' }} value={resp.nuevo}
+                    onChange={e => setResp({ ...resp, nuevo: e.target.value })}>
+                    {resp.usuarios.map(u => <option key={u.id} value={u.id}>{u.nombre ? `${u.nombre} (${u.username})` : u.username}</option>)}
+                  </select>
+                  <button className="btn btn-primary btn-sm" id="btn-guardar-responsable" onClick={guardarResponsable}>Guardar</button>
+                  <button className="btn btn-ghost btn-sm" onClick={() => setResp(null)}>Cancelar</button>
+                </>
+              )}
+            </div>
+          )}
         </div>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           <Link to="/ordenes" className="btn btn-ghost">← Órdenes de trabajo</Link>
@@ -127,6 +183,9 @@ export default function OrdenDetalle() {
           {!ocultaMontos(user) && <Link to={`/ordenes/${otId}/costos`} className="btn btn-ghost" id="link-costos">Costos</Link>}
           {gestionaProduccion && estadoOT && !ESTADOS_CERRADOS.includes(estadoOT) && (
             <button className="btn btn-primary" id="btn-finalizar-ot" onClick={finalizarOT}>Finalizar OT</button>
+          )}
+          {gestionaProduccion && estadoOT && !ESTADOS_CERRADOS.includes(estadoOT) && (
+            <button className="btn btn-ghost" id="btn-anular-ot" style={{ color: 'var(--danger)' }} onClick={anularOT}>Anular OT</button>
           )}
         </div>
       </div>
@@ -182,7 +241,7 @@ export default function OrdenDetalle() {
                       {s.fecha_uso ? new Date(s.fecha_uso).toLocaleString('sv-SE').slice(0, 16) : '—'}
                     </td>
                     <td>
-                      <div style={{ fontWeight: 500, fontSize: 13 }}>{s.material}</div>
+                      <div style={{ fontWeight: 500, fontSize: 13 }}><NombreCorto texto={s.material} /></div>
                       <div style={{ fontSize: 11, color: '#aaa' }}>{s.sku}</div>
                     </td>
                     <td style={{ fontSize: 12, color: 'var(--gray)' }}>{s.color_aplicado || s.color_catalogo || '—'}</td>
@@ -239,7 +298,8 @@ export default function OrdenDetalle() {
             </div>
           </div>
 
-          {movError && <div className="alert alert-danger" style={{ marginBottom: 16, fontSize: 13 }}>Error cargando movimientos: {movError}</div>}
+          <Alert type="danger" message={movError && `Error cargando movimientos: ${movError}`} style={{ marginBottom: 16, fontSize: 13 }}
+            onClose={() => setMovError(null)} />
 
           {movs?.resumen && (
             <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', marginBottom: 12, fontSize: 13 }}>
@@ -282,7 +342,7 @@ export default function OrdenDetalle() {
                         </td>
                         <td><span className={'badge ' + cls}>{m.tipo || '—'}</span></td>
                         <td>
-                          <div style={{ fontWeight: 500, fontSize: 13 }}>{m.material || '—'}</div>
+                          <div style={{ fontWeight: 500, fontSize: 13 }}><NombreCorto texto={m.material} /></div>
                           <div style={{ fontSize: 11, color: '#aaa' }}>{m.sku}</div>
                         </td>
                         <td style={{ textAlign: 'right', fontWeight: 600 }}>
@@ -291,12 +351,16 @@ export default function OrdenDetalle() {
                         </td>
                         <td style={{ fontSize: 12, color: 'var(--gray)' }}>{m.bodega || '—'}</td>
                         <td style={{ fontSize: 11, color: 'var(--gray)' }}>{m.lote || '—'}</td>
-                        <td style={{ fontSize: 12, color: 'var(--gray)' }} title={m.descripcion_motivo || ''}>{m.motivo || '—'}</td>
+                        <td style={{ fontSize: 12, color: 'var(--gray)' }}>
+                          {m.motivo || '—'}
+                          {/* F-05: el detalle (p. ej. el motivo de un consumo extra) se lee sin pasar el mouse */}
+                          {m.descripcion_motivo && <div style={{ fontSize: 11, maxWidth: 280 }}>{m.descripcion_motivo}</div>}
+                        </td>
                         {/* El movimiento hereda el trabajador asignado a la OT, no quien lo registró */}
                         <td style={{ fontSize: 12, color: 'var(--gray)' }}>{m.usuario || '—'}</td>
                         <td>
                           <span className={'badge ' + (revertido ? 'badge-gray' : m.estado === 'pendiente_aprobacion' ? 'badge-warning' : 'badge-success')}>
-                            {m.estado || '—'}
+                            {etiqueta(m.estado)}
                           </span>
                         </td>
                       </tr>

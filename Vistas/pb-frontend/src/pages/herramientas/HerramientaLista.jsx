@@ -6,7 +6,7 @@ import { exportarCSV } from '../../utils/csvExport';
 import BotonExportar from '../../components/BotonExportar';
 import { useAuth } from '../../hooks/useAuth';
 import { usePageTitle } from '../../contexts/TitleContext';
-import Alert, { useAlert } from '../../components/Alert';
+import Alert, { useAlert, AvisoCerrable } from '../../components/Alert';
 import Pagination, { EmptyRow } from '../../components/Pagination';
 import { usePagination } from '../../hooks/usePagination';
 import { TabAsignaciones, TabDepreciacion, TabMantenimiento } from './HerramientaGestion';
@@ -205,11 +205,11 @@ export default function HerramientaLista() {
 
       {/* La valorización es parcial si faltan valores: decirlo, no mostrar un total engañoso */}
       {verValores && resumen.sin_valor > 0 && (
-        <div className="alert alert-warning" style={{ marginBottom: 16, fontSize: 13 }}>
+        <AvisoCerrable className="alert alert-warning" style={{ marginBottom: 16, fontSize: 13 }}>
           ⚠ Valorización parcial: {resumen.sin_valor} de {resumen.total_herramientas} herramienta(s) no tienen
           valor de adquisición ni precio referencial, así que no suman al total.
           {puedeEditar && ' Puede cargarlo desde la columna "Valor unitario".'}
-        </div>
+        </AvisoCerrable>
       )}
 
       {/* Filtros */}

@@ -7,6 +7,10 @@ import Alert, { useAlert } from '../../components/Alert';
 import EscanerCodigo from '../../components/EscanerCodigo';
 import SelectorProducto from '../../components/SelectorProducto';
 import { ERR_BORDER, ERR_FULL } from '../productos/clasificacion';
+import { datetimeLocal } from '../../utils/format';
+
+// F-11 (D73): una salida con fecha pasada, como máximo 14 días atrás (el backend lo vuelve a validar)
+const DIAS_FECHA_PASADA = 14;
 
 // Fecha LOCAL (con toISOString(), que es UTC, desde las 21:00 en Chile mostraba el día siguiente)
 const hoy = () => {
@@ -37,6 +41,11 @@ export default function MovimientoSalida() {
   const [motivoId, setMotivoId] = useState('');
   const [motivo, setMotivo] = useState('');
   const [evidenciaUrl, setEvidenciaUrl] = useState('');
+  const [fechaSalida, setFechaSalida] = useState('');   // F-11: vacío = ahora
+  const [limitesFecha] = useState(() => ({
+    min: datetimeLocal(new Date(Date.now() - DIAS_FECHA_PASADA * 86400000)),
+    max: datetimeLocal(),
+  }));
   const [motivoPlaceholder, setMotivoPlaceholder] = useState('Ej: Producto dañado durante transporte hacia obra, lote 2025-05.');
   const [errStyles, setErrStyles] = useState({});
   const [saving, setSaving] = useState(false);
@@ -192,6 +201,7 @@ export default function MovimientoSalida() {
           motivo_id:          motivoId ? parseInt(motivoId) : null,
           descripcion_motivo: motivoTexto,
           evidencia_url:      esMerma ? evidenciaUrl.trim() : null,
+          ...(fechaSalida && { fecha: fechaSalida }),
         });
         showAlert('success', 'Salida registrada correctamente. El stock ha sido descontado aplicando método FIFO.');
       }
@@ -213,7 +223,7 @@ export default function MovimientoSalida() {
       <div className="page-header">
         <div>
           <div className="page-title">Registrar Salida</div>
-          <div className="page-subtitle">Retiro de stock del inventario (FR-19, FR-24, FR-25)</div>
+          <div className="page-subtitle">Retiro de stock del inventario</div>
         </div>
         <Link to="/movimientos/historial" className="btn btn-secondary">← Volver al historial</Link>
       </div>
@@ -275,7 +285,7 @@ export default function MovimientoSalida() {
           </div>
 
           <div className="card" style={{ marginBottom: 16 }}>
-            <div className="section-label">Clasificación de la salida (FR-25)</div>
+            <div className="section-label">Clasificación de la salida</div>
             <div className="form-group">
               <label className="form-label" htmlFor="clasificacion">Categoría <span className="required">*</span></label>
               <select className="form-control" id="clasificacion" required value={clasifId} onChange={e => onClasifChange(e.target.value)} style={errStyles.clasificacion}>
@@ -306,10 +316,23 @@ export default function MovimientoSalida() {
                 </select>
               </div>
             )}
+            {/* F-11 (D73): fecha pasada opcional; pide la autorización de un gerente */}
+            {clasifId && !esTraslado && (
+              <div className="form-group">
+                <label className="form-label" htmlFor="fecha-salida">Fecha real de la salida <span style={{ fontWeight: 400, color: 'var(--gray)' }}>(opcional)</span></label>
+                <input type="datetime-local" className="form-control" id="fecha-salida" value={fechaSalida}
+                  min={limitesFecha.min} max={limitesFecha.max}
+                  onChange={e => setFechaSalida(e.target.value)} />
+                <div style={{ fontSize: 12, color: 'var(--gray)', marginTop: 4 }}>
+                  Solo si la salida ocurrió antes de hoy: hasta {DIAS_FECHA_PASADA} días atrás y no antes del último conteo de la bodega.
+                  Pide la autorización de un gerente.
+                </div>
+              </div>
+            )}
           </div>
 
           <div className="card">
-            <div className="section-label">Motivo de salida (FR-24)</div>
+            <div className="section-label">Motivo de salida</div>
             <div className="form-group">
               <label className="form-label" htmlFor="motivo">
                 Descripción del motivo <span className="required">*</span>

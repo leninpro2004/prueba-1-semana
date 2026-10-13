@@ -1,4 +1,5 @@
 require('./entorno');
+const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const app = require('../../src/index');
 
@@ -27,27 +28,23 @@ function bajar() {
 }
 
 /**
- * Tokens de los dos usuarios de la semilla. Se firman con el JWT_SECRET real,
+ * Tokens de los usuarios de la semilla, uno por rol. Se firman con el JWT_SECRET real,
  * así que pasan por el middleware de auth igual que uno de verdad.
+ * B-01: el middleware toma el rol de la BD, no del token: por eso cada rol es un usuario
+ * distinto (ids 1 a 5 de semilla.sql) y no basta con cambiar el `rol` del token.
  */
-const token = (rol = 'gerencia') => jwt.sign(
-  rol === 'gerencia'
-    ? { id: 1, username: 'gerente.test', nombre: 'Gerente Test', rol: 'gerencia' }
-    : { id: 2, username: 'jop.test',     nombre: 'JOP Test',     rol: 'jop' },
-  process.env.JWT_SECRET,
-  { expiresIn: '1h' }
-);
-
-/**
- * CU-44: token de autorización para revertir un movimiento, con los mismos claims
- * que firma POST /api/auth/reautenticar (CU-42). `extra` pisa claims u opciones
- * para probar tokens de otro usuario, otra acción o vencidos.
- */
-const autorizacion = (mov, extra = {}, opciones = { expiresIn: '5m' }) => jwt.sign(
-  { uid: 1, accion: 'revertir_movimiento', mov: Number(mov), tipo: 'autorizacion', ...extra },
-  process.env.JWT_SECRET,
-  opciones
-);
+const USUARIOS_POR_ROL = {
+  gerencia:      { id: 1, username: 'gerente.test' },
+  jop:           { id: 2, username: 'jop.test' },
+  tecnico:       { id: 3, username: 'tecnico.test' },
+  secretaria:    { id: 4, username: 'secretaria.test' },
+  administrador: { id: 5, username: 'admin.test' },
+};
+const token = (rol = 'gerencia') => {
+  const u = USUARIOS_POR_ROL[rol];
+  if (!u) throw new Error(`Rol sin usuario en la semilla: ${rol}`);
+  return jwt.sign({ ...u, rol }, process.env.JWT_SECRET, { expiresIn: '1h' });
+};
 
 /**
  * Hace una petición a la API. Devuelve { status, body } siempre: los tests
@@ -56,13 +53,18 @@ const autorizacion = (mov, extra = {}, opciones = { expiresIn: '5m' }) => jwt.si
  *   await api('POST', '/api/movimientos/salida', { body: {...} })
  *   await api('GET',  '/api/materiales', { rol: 'jop' })
  *   await api('GET',  '/api/materiales', { sinToken: true })
+ *
+ * F-11: si la ruta responde 428 (pide la firma de un gerente), firma como el gerente de la semilla
+ * y repite la petición con el header X-Autorizacion, igual que el frontend. Así los tests que no son
+ * de firmas no cambian. { sinFirma: true } devuelve el 428 tal cual, para probar el rechazo.
  */
 async function api(metodo, ruta, opciones = {}) {
-  const { body, rol = 'gerencia', sinToken = false } = opciones;
+  const { body, rol = 'gerencia', sinToken = false, sinFirma = false, firma = null } = opciones;
   const url = await levantar();
 
   const headers = { 'Content-Type': 'application/json' };
   if (!sinToken) headers.Authorization = `Bearer ${token(rol)}`;
+  if (firma) headers['X-Autorizacion'] = firma;
 
   const res = await fetch(url + ruta, {
     method: metodo,
@@ -73,7 +75,20 @@ async function api(metodo, ruta, opciones = {}) {
   const texto = await res.text();
   let parsed;
   try { parsed = texto ? JSON.parse(texto) : null; } catch { parsed = texto; }
+  if (res.status === 428 && !sinFirma && !firma && parsed?.requiere_firma) {
+    return api(metodo, ruta, { ...opciones, firma: firmaGerencia(parsed.requiere_firma) });
+  }
   return { status: res.status, body: parsed };
 }
 
-module.exports = { api, levantar, bajar, token, autorizacion };
+/**
+ * F-11: token de firma de gerencia para `accion`, con los mismos claims que firma
+ * POST /api/auth/reautenticar en modo firma. `extra` pisa claims u opciones (otra acción, vencido).
+ */
+const firmaGerencia = (accion, extra = {}, opciones = { expiresIn: '5m' }) => jwt.sign(
+  { tipo: 'firma', accion, firmante: 1, jti: crypto.randomUUID(), ...extra },
+  process.env.JWT_SECRET,
+  opciones
+);
+
+module.exports = { api, levantar, bajar, token, firmaGerencia };

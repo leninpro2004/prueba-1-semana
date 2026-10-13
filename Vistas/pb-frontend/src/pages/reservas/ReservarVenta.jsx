@@ -84,7 +84,7 @@ export default function ReservarVenta() {
       <div className="page-header">
         <div>
           <div className="page-title">Reservar para venta</div>
-          <div className="page-subtitle">Material suelto de ventas aprobadas (CU-131). Las puertas se reservan por OT y por el pedido de instalación.</div>
+          <div className="page-subtitle">Material suelto de ventas aprobadas. Las puertas se reservan por OT y por el pedido de instalación.</div>
         </div>
         <Link to="/reservas" className="btn btn-ghost">← Reservas</Link>
       </div>

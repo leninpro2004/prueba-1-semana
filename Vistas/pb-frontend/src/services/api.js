@@ -6,9 +6,12 @@
  *   import { API } from '../services/api';
  *   const materiales = await API.materiales.listar();
  */
-import { getToken, USER_KEY, OPS_KEY } from '../utils/session';
+import { getToken, setToken, OPS_KEY } from '../utils/session';
 
-export const API_BASE = 'http://localhost:3000/api';
+// F-02: en la nube nginx sirve la página y la API en el mismo servidor, así que el build de producción
+// usa la ruta relativa /api. VITE_API_BASE (al compilar) la cambia si hiciera falta.
+export const API_BASE = import.meta.env.VITE_API_BASE
+  || (import.meta.env.DEV ? 'http://localhost:3000/api' : '/api');
 
 /* ── Manejo de 401 vía router ─────────────────────────── */
 // El HTML original hacía window.location.href = 'login.html'.
@@ -16,6 +19,27 @@ export const API_BASE = 'http://localhost:3000/api';
 let unauthorizedHandler = null;
 export function setUnauthorizedHandler(fn) {
   unauthorizedHandler = fn;
+}
+
+/* ── F-11: firma de gerencia (428) ─────────────────────── */
+// components/FirmaGerencia.jsx registra aquí una función que muestra el modal y devuelve
+// una promesa con el token de firma (o null si se cancela).
+let firmaHandler = null;
+export function setFirmaHandler(fn) {
+  firmaHandler = fn;
+}
+
+// B-22: última firma de cada acción. El backend la libera si la operación se rechaza (error de
+// validación), así que se reintenta con ella antes de volver a pedirla. Se borra tras un éxito y
+// solo vale para la sesión en que se pidió. El token dura 5 min: se da por vencida un poco antes.
+const firmasVigentes = new Map();   // accion -> { token, vence, sesion }
+const VIGENCIA_FIRMA_MS = 4.5 * 60 * 1000;
+
+function firmaGuardada(accion, enviada) {
+  const f = firmasVigentes.get(accion);
+  if (f && f.token !== enviada && f.vence > Date.now() && f.sesion === getToken()) return f.token;
+  firmasVigentes.delete(accion);
+  return null;
 }
 
 /* ── Auth helpers ─────────────────────────────────────── */
@@ -55,7 +79,7 @@ export async function apiFetch(path, opciones = {}) {
   }
 
   if (res.status === 401) {
-    sessionStorage.removeItem(USER_KEY);
+    setToken(null);
     // OPUS-8: el cuerpo del 401 puede traer codigo CUENTA_DESACTIVADA, para que el
     // login explique POR QUE se cerro la sesion en vez de aparecer sin mas.
     let detalle = null;
@@ -66,6 +90,24 @@ export async function apiFetch(path, opciones = {}) {
   }
 
   const data = await res.json();
+
+  // F-11: la acción pide la firma de un gerente. Se pide en el modal y se repite la MISMA
+  // petición con el token; el backend rechazó antes de tocar nada, así que repetir es seguro.
+  if (res.status === 428 && data?.requiere_firma && firmaHandler) {
+    const accion = data.requiere_firma;
+    let firma = firmaGuardada(accion, options.headers?.['X-Autorizacion']);
+    if (!firma) {
+      firma = await firmaHandler(data);
+      if (firma) firmasVigentes.set(accion, { token: firma, vence: Date.now() + VIGENCIA_FIRMA_MS, sesion: getToken() });
+    }
+    if (firma) {
+      return apiFetch(path, { ...opciones, headers: { ...options.headers, 'X-Autorizacion': firma } });
+    }
+    const err = new Error('Operación cancelada: se necesita la autorización de un gerente.');
+    err.payload = data;
+    err.status = 428;
+    throw err;
+  }
 
   // CU-96 CP3: 409 Conflict devuelve datos del conflicto para que el frontend decida
   if (res.status === 409) {
@@ -79,6 +121,12 @@ export async function apiFetch(path, opciones = {}) {
     err.payload = data;
     err.status  = res.status;
     throw err;
+  }
+
+  // B-22: la firma se gastó con este éxito
+  const usada = options.headers?.['X-Autorizacion'];
+  if (usada) {
+    for (const [accion, f] of firmasVigentes) if (f.token === usada) firmasVigentes.delete(accion);
   }
 
   return data;
@@ -110,15 +158,18 @@ export const API = {
         body: JSON.stringify({ password_actual, password_nueva }),
       }),
 
-    // OPUS-8: estado de la cuenta para el cierre de sesión en vivo
+    // B-01: usuario y rol de la sesión según la BD (el navegador solo guarda el token)
+    me: () => apiFetch('/auth/me'),
+
+    // OPUS-8: estado de la cuenta para el cierre de sesión en vivo (B-01: trae también el rol)
     sessionStatus: () => apiFetch('/auth/session-status'),
 
-    // CU-42: devuelve { autorizacion } para revertir ESE movimiento (5 min)
-    reautenticar: (password, movimientoId) =>
+    // CU-42 y F-11: firma de un gerente para una acción sensible → { autorizacion } (5 min, un solo uso)
+    firmar: (username, password, accion) =>
       apiFetch('/auth/reautenticar', {
         method: 'POST',
         sinCola: true,
-        body: JSON.stringify({ password, accion: 'revertir_movimiento', movimiento_id: movimientoId }),
+        body: JSON.stringify({ username, password, accion }),
       }),
 
     // CU-77
@@ -137,6 +188,22 @@ export const API = {
       }).then(r => r.json()),
   },
 
+  /* ── F-04: mantenedor de áreas, unidades y motivos (solo gerencia) ── */
+  catalogos: {
+    areas:            ()          => apiFetch('/catalogos/areas'),
+    crearArea:        (data)      => apiFetch('/catalogos/areas', { method: 'POST', body: JSON.stringify(data) }),
+    actualizarArea:   (id, data)  => apiFetch(`/catalogos/areas/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+    unidades:         ()          => apiFetch('/catalogos/unidades'),
+    crearUnidad:      (data)      => apiFetch('/catalogos/unidades', { method: 'POST', body: JSON.stringify(data) }),
+    actualizarUnidad: (id, data)  => apiFetch(`/catalogos/unidades/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+    eliminarUnidad:   (id)        => apiFetch(`/catalogos/unidades/${id}`, { method: 'DELETE' }),
+    motivos:          ()          => apiFetch('/catalogos/motivos'),
+    crearMotivo:      (data)      => apiFetch('/catalogos/motivos', { method: 'POST', body: JSON.stringify(data) }),
+    actualizarMotivo: (id, data)  => apiFetch(`/catalogos/motivos/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+    eliminarMotivo:   (id)        => apiFetch(`/catalogos/motivos/${id}`, { method: 'DELETE' }),
+    restaurarMotivo:  (data)      => apiFetch('/catalogos/motivos/restaurar', { method: 'POST', body: JSON.stringify(data) }),
+  },
+
   /* ── Materiales ── */
   materiales: {
     listar: (params = {}) => {
@@ -145,10 +212,18 @@ export const API = {
     },
     obtener:          (sku)    => apiFetch(`/materiales/${sku}`),
     crear:            (data)   => apiFetch('/materiales', { method: 'POST', body: JSON.stringify(data) }),
+    // F-23b: alta rápida de un material comprado por caja chica (SKU automático, sin categoría)
+    altaRapida:       (data)   => apiFetch('/materiales/alta-rapida', { method: 'POST', body: JSON.stringify(data) }),
     actualizar:       (sku, data) => apiFetch(`/materiales/${sku}`, { method: 'PUT', body: JSON.stringify(data) }),
     eliminar:         (sku)        => apiFetch(`/materiales/${sku}`, { method: 'DELETE' }),
     unidades:         ()       => apiFetch('/materiales/catalogos/unidades'),
     categorias:       ()       => apiFetch('/materiales/catalogos/categorias'),
+    // B-14: mantenedor de la clasificación (tipo: general | funcional | categoria | subcategoria | nivel)
+    clasificacion:    ()       => apiFetch('/materiales/catalogos/clasificacion'),
+    crearClasificacion:      (tipo, data)     => apiFetch(`/materiales/catalogos/clasificacion/${tipo}`, { method: 'POST', body: JSON.stringify(data) }),
+    actualizarClasificacion: (tipo, id, data) => apiFetch(`/materiales/catalogos/clasificacion/${tipo}/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+    eliminarClasificacion:   (tipo, id, moverA) =>
+      apiFetch(`/materiales/catalogos/clasificacion/${tipo}/${id}${moverA ? `?mover_a=${moverA}` : ''}`, { method: 'DELETE' }),
     // Incremento 2
     reactivar:        (sku)    => apiFetch(`/materiales/${sku}/reactivar`, { method: 'PUT' }),
     duplicar:         (data)   => apiFetch('/materiales/duplicar', { method: 'POST', body: JSON.stringify(data) }),
@@ -239,6 +314,8 @@ export const API = {
     // CU-107 (lo usan Terreno y Finanzas; aquí, el simulador). Un 409 llega como datos:
     // { codigo: 'STOCK_INSUFICIENTE' | 'CLAVE_REUTILIZADA' }. Sin cola offline: el reintento lo decide el módulo de origen.
     registrarMovimiento: (data) => apiFetch('/integracion/movimientos', { method: 'POST', body: JSON.stringify(data), sinCola: true }),
+    // CU-106: { sku, bodega_id? } → { sku, nombre, unidad, bodegas: [...], total }
+    consultarStock:   (params) => apiFetch(`/integracion/stock?${qsOf(params)}`),
   },
 
   /* ── Bodegas ── */
@@ -265,8 +342,8 @@ export const API = {
     entrada:          (data)   => apiFetch('/movimientos/entrada', { method: 'POST', body: JSON.stringify(data) }),
     salida:           (data)   => apiFetch('/movimientos/salida',  { method: 'POST', body: JSON.stringify(data) }),
     traslado:         (data)   => apiFetch('/movimientos/traslado', { method: 'POST', body: JSON.stringify(data) }),   // D60
-    // CU-42: `autorizacion` es el token de API.auth.reautenticar (se exige en CU-44)
-    revertir:         (id, autorizacion) => apiFetch(`/movimientos/${id}/revertir`, { method: 'POST', body: JSON.stringify({ autorizacion }) }),
+    // CU-44: la firma de gerencia (CU-42, F-11) la pide apiFetch ante el 428
+    revertir:         (id)     => apiFetch(`/movimientos/${id}/revertir`, { method: 'POST' }),
     // Incremento 2 — CU-68.1
     aprobarMerma:     (id)     => apiFetch(`/movimientos/${id}/aprobar-merma`,  { method: 'PUT' }),
     rechazarMerma:    (id)     => apiFetch(`/movimientos/${id}/rechazar-merma`, { method: 'PUT' }),
@@ -305,6 +382,7 @@ export const API = {
   reportes: {
     movimientos: (params = {}) => apiFetch('/reportes/movimientos?' + qsOf(params)),
     mermas:      (params = {}) => apiFetch('/reportes/mermas?' + qsOf(params)),
+    resumen:     ()            => apiFetch('/reportes/resumen'),   // B-08b: indicadores del mes (índice)
     // Incremento 2
     valorizacion: ()           => apiFetch('/reportes/valorizacion'),
     listarAreas:  ()           => apiFetch('/reportes/areas'),
@@ -386,6 +464,8 @@ export const API = {
     cambiarEstado: (id, activo) => apiFetch(`/recetas/${id}/estado`, { method: 'PUT', body: JSON.stringify({ activo }) }),
     cargarEnOT:  (id, otId, modo = 'faltantes') =>
       apiFetch(`/recetas/${id}/cargar-en-ot/${otId}?modo=${modo}`, { method: 'POST' }),
+    // F-08: resultado de una fórmula con la puerta de ejemplo (400 con el error si no es válida)
+    probarFormula: (formula) => apiFetch('/recetas/probar-formula?' + new URLSearchParams({ formula }).toString()),
   },
 
   /* ── Auditoría ── */
@@ -414,6 +494,8 @@ export const API = {
     crear:             (data)   => apiFetch('/usuarios', { method: 'POST', body: JSON.stringify(data) }),
     editarPermisos:    (id, data) => apiFetch(`/usuarios/${id}/permisos`, { method: 'PUT', body: JSON.stringify(data) }),
     recuperarPassword: (id)     => apiFetch(`/usuarios/${id}/recuperar-password`, { method: 'POST' }),
+    // B-03: mueve todas sus OT abiertas a otro responsable
+    reasignarOT:       (id, responsableId) => apiFetch(`/usuarios/${id}/reasignar-ot`, { method: 'POST', body: JSON.stringify({ responsable_id: responsableId }) }),
     auditoria: (params = {}) => {
       const qs = qsOf(params);
       return apiFetch('/usuarios/auditoria' + (qs ? '?' + qs : ''));
@@ -533,6 +615,13 @@ export const API = {
 
   /* ── Órdenes de Trabajo ── */
   ordenesTrabajo: {
+    // F-06: crear OT desde Inventario. { area_id, proyecto_id?, nota_venta_id?, receta_id?, cantidad_puertas?, responsable_id? }
+    crear:         (data) => apiFetch('/ordenes-trabajo', { method: 'POST', body: JSON.stringify(data) }),
+    opcionesNueva: ()     => apiFetch('/ordenes-trabajo/opciones-nueva'),
+    proyectos:     ()     => apiFetch('/ordenes-trabajo/proyectos'),   // F-24
+    // F-29 (D83): gerencia crea proyectos en terreno, temporalmente
+    opcionesNuevoProyecto: () => apiFetch('/ordenes-trabajo/proyectos/nuevo'),
+    crearProyecto: (data) => apiFetch('/ordenes-trabajo/proyectos', { method: 'POST', body: JSON.stringify(data) }),
     listar: (params = {}) => {
       const qs = qsOf(params);
       return apiFetch('/ordenes-trabajo' + (qs ? '?' + qs : ''));
@@ -547,12 +636,19 @@ export const API = {
     registrarEstimados:(id, data) => apiFetch(`/ordenes-trabajo/${id}/estimados`, { method: 'PUT', body: JSON.stringify(data) }),
     comparativo:       (id)       => apiFetch(`/ordenes-trabajo/${id}/comparativo`),
     costos:            (id)       => apiFetch(`/ordenes-trabajo/${id}/costos`),
-    rentabilidad:      (id, margen) => apiFetch(`/ordenes-trabajo/${id}/rentabilidad?margen=${margen}`),
+    // F-10: params = { margen, reserva?, adicional? } (porcentajes y costo adicional por puerta)
+    rentabilidad:      (id, params) => apiFetch(`/ordenes-trabajo/${id}/rentabilidad?${qsOf(params)}`),
     editarConsumo:     (id, sku, data) => apiFetch(`/ordenes-trabajo/${id}/consumos/${encodeURIComponent(sku)}`, { method: 'PUT', body: JSON.stringify(data) }),
     eliminarMaterial:  (id, sku)    => apiFetch(`/ordenes-trabajo/${id}/materiales/${encodeURIComponent(sku)}`, { method: 'DELETE' }),
     asignarEmpleadoTentativo: (id, empleado_id) => apiFetch(`/ordenes-trabajo/${id}/empleado-tentativo`, { method: 'PUT', body: JSON.stringify({ empleado_id }) }),
     // CU-103: finalizar la OT y procesar sus diferenciales (gerencia y jop)
     finalizar:         (id) => apiFetch(`/ordenes-trabajo/${id}/finalizar`, { method: 'PUT' }),
+    // B-03: cambiar el responsable (solo gerencia, OT abierta)
+    cambiarResponsable: (id, responsableId) => apiFetch(`/ordenes-trabajo/${id}/responsable`, { method: 'PUT', body: JSON.stringify({ responsable_id: responsableId }) }),
+    // F-08: medidas de la puerta { vano_ancho_mm, vano_alto_mm, hojas, mdf, perfil_marco_mm }, o null para quitarlas
+    guardarMedidas: (id, medidas) => apiFetch(`/ordenes-trabajo/${id}/medidas`, { method: 'PUT', body: JSON.stringify({ medidas }) }),
+    // F-28: anular (nunca borrar). 409 con { codigo: 'OT_CON_CONSUMO', error } si tiene consumo vigente
+    anular:            (id, motivo) => apiFetch(`/ordenes-trabajo/${id}/anular`, { method: 'PUT', body: JSON.stringify({ motivo }) }),
     diferenciales:     (id) => apiFetch(`/ordenes-trabajo/${id}/diferenciales`),
     procesarDiferenciales: (id) => apiFetch(`/ordenes-trabajo/${id}/diferenciales`, { method: 'POST' }),
     // R1: pestaña Consumo. { receta_id?, cantidad_puertas?, reemplazar_receta?, bodega_id?, lineas: [{ sku, estimado, real }] }

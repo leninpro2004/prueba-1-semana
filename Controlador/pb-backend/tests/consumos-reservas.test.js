@@ -257,6 +257,10 @@ describe('Reservas', () => {
     assert.equal(despues.reservada, antes.reservada + 3);
     assert.equal(despues.fisica, antes.fisica, 'reservar NO mueve stock físico');
     await invarianteOk();
+    // Sesión 15b: la reserva guarda quién la creó
+    const { rows } = await db.query(`SELECT usuario_id_usuario::int AS usuario FROM inventario.reserva_inventario
+                                     WHERE reserva_inventario_id_reserva = $1`, [r.body.resultados[0].id]);
+    assert.deepEqual(rows, [{ usuario: 1 }]);
   });
 
   test('la reserva guarda el proyecto de la OT', async () => {

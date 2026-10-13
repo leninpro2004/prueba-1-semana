@@ -1,7 +1,7 @@
 const { test, before, after, beforeEach, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const jwt = require('jsonwebtoken');
-const { api, bajar, levantar, autorizacion } = require('./helpers/api');
+const { api, bajar, levantar } = require('./helpers/api');
 const db = require('./helpers/db');
 const { compra } = require('./helpers/compra');   // D66: una compra lleva proveedor, precio, pedido y factura
 const { stockAFecha } = require('../src/db/historico');
@@ -112,7 +112,7 @@ describe('stockAFecha (D21) — test obligatorio', () => {
   test('cuadra con el stock real en todos los materiales, a hoy y tras cada flujo que mueve stock', async () => {
     const fotos = [await foto('semilla')];
     const ok = (r, paso) => { assert.ok(r.status < 300, `${paso}: ${r.status} ${JSON.stringify(r.body)}`); return r; };
-    const revertir = (id) => api('POST', `/api/movimientos/${id}/revertir`, { body: { autorizacion: autorizacion(id) } });
+    const revertir = (id) => api('POST', `/api/movimientos/${id}/revertir`);
 
     // Entrada y salida manuales que quedan vigentes
     ok(await api('POST', '/api/movimientos/entrada', {
@@ -312,7 +312,7 @@ describe('Índice de rotación (CU-71)', () => {
     assert.equal((await rotacion(undefined, undefined, 'jop')).status, 200);
 
     const url = await levantar();
-    const tecnico = jwt.sign({ id: 2, username: 'jop.test', rol: 'tecnico' }, process.env.JWT_SECRET, { expiresIn: '5m' });
+    const tecnico = jwt.sign({ id: 3, username: 'tecnico.test', rol: 'tecnico' }, process.env.JWT_SECRET, { expiresIn: '5m' });
     const res = await fetch(`${url}/api/reportes/rotacion?desde=${hoyMas(-29)}&hasta=${hoyMas(0)}`, {
       headers: { Authorization: `Bearer ${tecnico}` },
     });

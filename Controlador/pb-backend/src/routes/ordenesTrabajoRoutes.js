@@ -2,6 +2,7 @@ const express = require('express');
 const router  = express.Router();
 const ctrl    = require('../controllers/ordenesTrabajoController');
 const { authMiddleware, soloGerencia, soloOperativo } = require('../middleware/auth');
+const { requiereFirma } = require('../middleware/firma');
 
 router.use(authMiddleware);
 
@@ -14,6 +15,13 @@ function soloGerenciaOJop(req, res, next) {
 }
 
 router.get('/',                       ctrl.listar);
+// F-06: crear OT desde Inventario (rutas fijas antes de /:id)
+router.get('/opciones-nueva',         ctrl.opcionesNueva);
+router.get('/proyectos',              ctrl.proyectosConOT);   // F-24: crear OT desde el proyecto
+// F-29 (D83): gerencia crea proyectos en terreno mientras Terreno no lo haga (temporal)
+router.get('/proyectos/nuevo',        soloGerencia, ctrl.opcionesNuevoProyecto);
+router.post('/proyectos',             soloGerencia, ctrl.crearProyecto);
+router.post('/',                      soloOperativo, ctrl.crear);
 router.get('/:id/consumos',           ctrl.consultarConsumos);
 router.get('/:id/movimientos',        ctrl.movimientosOT);
 // D62: registrar o corregir consumos (mueven stock) exige rol operativo
@@ -21,13 +29,16 @@ router.post('/:id/consumos',          soloOperativo, ctrl.registrarConsumo);
 router.put('/:id/consumos/:sku',      soloOperativo, ctrl.editarConsumo);
 router.put('/:id/estimados',          soloOperativo, ctrl.registrarEstimados);
 router.put('/:id/consumo',            soloOperativo, ctrl.guardarConsumo);   // R1: pestaña Consumo (receta + real, todo junto)
-router.put('/:id/correccion',         soloGerencia, ctrl.corregirConsumoCerrada);   // D54: OT cerrada, con motivo
+router.put('/:id/correccion',         soloGerencia, requiereFirma('corregir_consumo'), ctrl.corregirConsumoCerrada);   // D54: OT cerrada, con motivo
 router.delete('/:id/materiales/:sku', soloOperativo, ctrl.eliminarMaterial);
 router.put('/:id/empleado-tentativo', soloOperativo, ctrl.asignarEmpleadoTentativo);
+router.put('/:id/medidas',            soloOperativo, ctrl.guardarMedidas);   // F-08: medidas de la puerta
 router.get('/:id/comparativo',        ctrl.comparativo);
 router.get('/:id/costos',    soloGerencia, ctrl.costos);
 router.get('/:id/rentabilidad', soloGerencia, ctrl.rentabilidad);
 router.put('/:id/finalizar',          soloGerenciaOJop, ctrl.finalizar);               // CU-103
+router.put('/:id/anular',             soloGerenciaOJop, requiereFirma('ot_anular'), ctrl.anular);                  // F-28: nunca se borra
+router.put('/:id/responsable',        soloGerencia, requiereFirma('ot_responsable'), ctrl.cambiarResponsable);          // B-03
 router.get('/:id/diferenciales',      soloGerenciaOJop, ctrl.consultarDiferenciales);  // CU-103
 router.post('/:id/diferenciales',     soloGerenciaOJop, ctrl.procesarDiferenciales);   // CU-103
 

@@ -4,7 +4,9 @@ import { API } from '../../services/api';
 import { useAuth } from '../../hooks/useAuth';
 import { useConfirm } from '../../hooks/useDialog';
 import { usePageTitle } from '../../contexts/TitleContext';
-import Alert, { useAlert } from '../../components/Alert';
+import Alert, { useAlert, AvisoCerrable } from '../../components/Alert';
+import { usePagination } from '../../hooks/usePagination';
+import Pagination from '../../components/Pagination';
 import { ERR_FULL } from '../productos/clasificacion';
 
 const CAMPOS = ['rut', 'nombre', 'contacto', 'email', 'telefono', 'rubro', 'direccion', 'obs'];
@@ -29,6 +31,7 @@ export default function ProveedorLista() {
   const [fEstado, setFEstado] = useState('');
   const [cambiandoEstado, setCambiandoEstado] = useState(null);
   const [proveedores, setProveedores] = useState([]);
+  const pag = usePagination(proveedores, 20);   // B-10
   const [modal, setModal] = useState(false);
   const [f, setF] = useState(VACIO);
   const [errs, setErrs] = useState({});
@@ -176,7 +179,7 @@ export default function ProveedorLista() {
       <div className="page-header">
         <div>
           <div className="page-title">Directorio de Proveedores</div>
-          <div className="page-subtitle">Registro, datos de contacto y tiempos de entrega (FR-22, FR-41)</div>
+          <div className="page-subtitle">Registro, datos de contacto y tiempos de entrega</div>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
           {/* CU-63: métricas comparativas (sin montos, todos los roles) */}
@@ -222,7 +225,7 @@ export default function ProveedorLista() {
               {proveedores.length === 0 && (
                 <tr><td colSpan={9}><div className="empty-state"><div className="empty-state-icon">🏢</div><p>No se encontraron proveedores.</p></div></td></tr>
               )}
-              {proveedores.map(p => (
+              {pag.items.map(p => (
                 <tr key={p.id} style={esActivo(p) ? undefined : { opacity: 0.6 }}>
                   <td><span className="td-mono">{p.rut || '—'}</span></td>
                   <td style={{ fontWeight: 500, fontSize: 13 }}>{p.nombre}</td>
@@ -270,6 +273,7 @@ export default function ProveedorLista() {
             </tbody>
           </table>
         </div>
+        <Pagination {...pag} />
       </div>
 
       {/* Modal nuevo proveedor (FR-22) */}
@@ -281,7 +285,7 @@ export default function ProveedorLista() {
               <button className="modal-close" onClick={() => setModal(false)}>&#x2715;</button>
             </div>
             <div className="modal-body">
-              <div id="modal-alert">{modalAlert && <div className="alert alert-danger">{modalAlert}</div>}</div>
+              <div id="modal-alert">{modalAlert && <AvisoCerrable className="alert alert-danger">{modalAlert}</AvisoCerrable>}</div>
               <div className="form-row">
                 <div className="form-group">
                   <label className="form-label" htmlFor="n-rut">RUT <span className="required">*</span></label>
@@ -338,7 +342,7 @@ export default function ProveedorLista() {
               <button className="modal-close" onClick={() => setEditModal(null)}>&#x2715;</button>
             </div>
             <div className="modal-body">
-              <div id="modal-editar-alert">{editAlert && <div className="alert alert-danger">{editAlert}</div>}</div>
+              <div id="modal-editar-alert">{editAlert && <AvisoCerrable className="alert alert-danger">{editAlert}</AvisoCerrable>}</div>
               <div className="form-row">
                 <div className="form-group">
                   <label className="form-label" htmlFor="e-rut">RUT <span className="required">*</span></label>

@@ -3,9 +3,22 @@ const { query } = require('../db/pool');
 const auditoria = require('../controllers/auditoriaController');
 
 /**
+ * B-01: rol a partir de los booleanos usuario_es_* (el modelo no tiene columna de rol).
+ * Lo comparten login, /auth/me y el middleware, para que el orden sea uno solo.
+ */
+function rolDe(fila) {
+  if (fila.es_gerencia) return 'gerencia';
+  if (fila.es_tecnico)  return 'tecnico';
+  if (fila.es_admin)    return 'administrador';
+  if (fila.es_sec)      return 'secretaria';
+  return 'jop';
+}
+
+/**
  * Verifica el token JWT en el header Authorization.
- * Si es válido, verifica que la cuenta siga activa en la BD
- * y adjunta el payload en req.user.
+ * Si es válido, verifica que la cuenta siga activa en la BD y adjunta en req.user
+ * el usuario LEÍDO DE LA BD (B-01): el rol del token es el del momento del login y
+ * no se usa, así un cambio de rol corre desde el request siguiente.
  */
 async function authMiddleware(req, res, next) {
   const header = req.headers['authorization'];
@@ -16,11 +29,19 @@ async function authMiddleware(req, res, next) {
   const token = header.split(' ')[1];
   try {
     const payload = jwt.verify(token, process.env.JWT_SECRET);
+    // B-02: los tokens con `tipo` (recuperación, autorización de CU-42) no son sesiones
+    if (payload.tipo) return res.status(401).json({ error: 'Token inválido o expirado' });
 
     // Verificar que la cuenta sigue activa en la base de datos
     const { rows } = await query(
       `SELECT usuario_estado_cuenta            AS estado,
               usuario_username                 AS username,
+              usuario_nombre_completo_primer_nombre_usuario   AS primer_nombre,
+              usuario_nombre_completo_primer_apellido_usuario AS primer_apellido,
+              usuario_es_gerencia              AS es_gerencia,
+              usuario_es_tecnico               AS es_tecnico,
+              usuario_es_administrador         AS es_admin,
+              usuario_es_secretaria            AS es_sec,
               usuario_desactivacion_programada AS desactivacion_programada,
               usuario_activacion_programada    AS activacion_programada
        FROM inventario.usuario WHERE usuario_id_usuario = $1`,
@@ -70,7 +91,13 @@ async function authMiddleware(req, res, next) {
       });
     }
 
-    req.user = payload; // { id, username, nombre, rol }
+    const fila = rows[0];
+    req.user = {
+      id: payload.id,
+      username: fila.username,
+      nombre: `${fila.primer_nombre || ''} ${fila.primer_apellido || ''}`.trim(),
+      rol: rolDe(fila),
+    };
     next();
   } catch (err) {
     if (err.name === 'JsonWebTokenError' || err.name === 'TokenExpiredError') {
@@ -130,4 +157,4 @@ function quitarCampos(filas, campos) {
   return filas;
 }
 
-module.exports = { authMiddleware, soloGerencia, soloOperativo, soloGerenciaOAdministrador, ocultaMontos, quitarCampos };
+module.exports = { rolDe, authMiddleware, soloGerencia, soloOperativo, soloGerenciaOAdministrador, ocultaMontos, quitarCampos };

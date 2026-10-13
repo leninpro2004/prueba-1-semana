@@ -1,5 +1,4 @@
 import { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
 import { API } from '../../services/api';
 import { formatQty, formatMoney } from '../../utils/format';
 import { exportarCSV } from '../../utils/csvExport';
@@ -7,6 +6,7 @@ import { exportarPDF } from '../../utils/pdfExport';
 import { usePageTitle } from '../../contexts/TitleContext';
 import BotonExportar from '../../components/BotonExportar';
 import Alert, { useAlert } from '../../components/Alert';
+import ReportesNav from '../../components/ReportesNav';
 
 /** Valorización de Inventario — conversión 1:1 de reportes/valorizacion.html */
 export default function ReporteValorizacion() {
@@ -74,16 +74,13 @@ export default function ReporteValorizacion() {
 
   return (
     <>
+      <ReportesNav />
       <div className="page-header">
         <div>
           <div className="page-title">Valorización de Inventario</div>
           <div className="page-subtitle">Valor económico total del stock actual</div>
         </div>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          <Link to="/reportes/movimientos" className="btn btn-ghost">← Reportes</Link>
-          <Link to="/reportes/mermas" className="btn btn-ghost">Mermas</Link>
-          <Link to="/reportes/consumo-area" className="btn btn-ghost">Consumo por área</Link>
-          <Link to="/reportes/programacion" className="btn btn-ghost">Programación</Link>
           <BotonExportar id="btn-exportar" onClick={exportar} filas={detalle == null ? null : detalle.length} />
           <BotonExportar id="btn-exportar-pdf" onClick={exportarPdf} cargando={generandoPdf}
                          filas={detalle == null ? null : detalle.length} etiqueta="Exportar PDF" />

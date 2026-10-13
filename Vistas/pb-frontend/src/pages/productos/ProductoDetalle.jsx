@@ -5,10 +5,17 @@ import { formatQty, formatMoney, fechaLocal, hoyLocal } from '../../utils/format
 import { useAuth } from '../../hooks/useAuth';
 import { useConfirm } from '../../hooks/useDialog';
 import { usePageTitle } from '../../contexts/TitleContext';
-import Alert, { useAlert } from '../../components/Alert';
+import Alert, { useAlert, AvisoCerrable } from '../../components/Alert';
 import VariacionPrecio from '../../components/VariacionPrecio';
+import BotonExportar from '../../components/BotonExportar';
+import { BarrasAgrupadas } from '../../components/Charts';
+import { exportarCSV } from '../../utils/csvExport';
+import NombreCorto from '../../components/NombreCorto';   // F-17
 
 const DIAS = { semana: 7, mes: 30, trimestre: 90, anio: 365 };
+// F-14: precio por mes
+const MESES = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
+const MESES_LARGOS = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
 
 const SIN_DATOS = <span style={{ color: 'var(--gray)', fontStyle: 'italic' }}>Sin datos</span>;
 const fmtDias1 = (v) => `${Number(v).toLocaleString('es-CL', { maximumFractionDigits: 1 })} d`;
@@ -20,7 +27,7 @@ const fmtDias1 = (v) => `${Number(v).toLocaleString('es-CL', { maximumFractionDi
  */
 function ComparacionProveedores({ datos, error, esGerencia, onVincular }) {
   const cab = <div className="section-label" style={{ marginBottom: 12 }}>Comparación de proveedores</div>;
-  if (error) return <div className="card">{cab}<div className="alert alert-danger">{error}</div></div>;
+  if (error) return <div className="card">{cab}<AvisoCerrable className="alert alert-danger">{error}</AvisoCerrable></div>;
   if (!datos) return <div className="card">{cab}<p style={{ fontSize: 13, color: 'var(--gray)' }}>Cargando…</p></div>;
 
   // Exc 2: el producto no tiene proveedores
@@ -45,9 +52,9 @@ function ComparacionProveedores({ datos, error, esGerencia, onVincular }) {
     <div className="card">{cab}
       {/* Exc 1: un único proveedor */}
       {!datos.alternativas && (
-        <div className="alert alert-warning" style={{ marginBottom: 12 }}>
+        <AvisoCerrable className="alert alert-warning" style={{ marginBottom: 12 }}>
           El producto tiene un único proveedor: no hay alternativas suficientes para realizar la comparación.
-        </div>
+        </AvisoCerrable>
       )}
       <div className="table-wrap">
         <table>
@@ -146,6 +153,11 @@ export default function ProductoDetalle() {
   const [precioDesde, setPrecioDesde] = useState('');
   const [precioHasta, setPrecioHasta] = useState('');
   const [precioProveedor, setPrecioProveedor] = useState('');
+  // F-14: precio por mes (el año y la comparación son solo del gráfico; el proveedor, de los dos)
+  const anioActual = Number(hoyLocal().slice(0, 4));
+  const [anioPrecio, setAnioPrecio] = useState(anioActual);
+  const [compararAnio, setCompararAnio] = useState(true);
+  const [preciosMes, setPreciosMes] = useState(null);
 
   const cargarDetalle = useCallback(async () => {
     if (!sku) { setTitulo('SKU no especificado'); return; }
@@ -218,6 +230,29 @@ export default function ProductoDetalle() {
   // CU-61: los montos del historial son solo para gerencia (el backend responde 403 al resto)
   // CU-65: se piden recién al abrir la pestaña Precios
   useEffect(() => { if (prod && esGerencia && tab === 'precios') cargarPrecios(); }, [prod, esGerencia, tab, cargarPrecios]);
+
+  // F-14: precio por mes del año elegido (y del anterior, si se compara)
+  useEffect(() => {
+    if (!prod || !esGerencia || tab !== 'precios') return;
+    let cancelado = false;
+    API.materiales.precios(sku, { agrupar: 'mes', anio: anioPrecio, comparar: compararAnio ? '1' : null, proveedor_id: precioProveedor || null })
+      .then(d => { if (!cancelado) setPreciosMes(d?.meses ? d : { meses: [] }); })
+      .catch(err => { if (!cancelado) { console.warn('Error cargando el precio por mes:', err.message); setPreciosMes({ meses: [] }); } });
+    return () => { cancelado = true; };
+  }, [prod, esGerencia, tab, sku, anioPrecio, compararAnio, precioProveedor]);
+
+  const seriesMes = preciosMes?.meses?.length
+    ? [{ label: String(preciosMes.anio), data: preciosMes.meses },
+       ...(preciosMes.anterior ? [{ label: String(preciosMes.anterior.anio), data: preciosMes.anterior.meses }] : [])]
+    : [];
+  const hayPreciosMes = seriesMes.some(s => s.data.some(v => v != null));
+
+  const exportarPreciosMes = () => {
+    const headers = ['Mes', ...seriesMes.map(s => ({ titulo: `Precio ${s.label}`, formato: 'clp' }))];
+    const rows = MESES_LARGOS.map((m, i) => [m, ...seriesMes.map(s => s.data[i])]);
+    try { exportarCSV(`precios-por-mes-${sku}-${preciosMes.anio}`, headers, rows); }
+    catch (e) { console.warn(e.message); }
+  };
 
   const limpiarFiltrosPrecios = () => { setPrecioDesde(''); setPrecioHasta(''); setPrecioProveedor(''); };
 
@@ -525,7 +560,7 @@ export default function ProductoDetalle() {
             {esGerencia && formProv && (
               <div id="add-prov-form" style={{ marginTop: 12, padding: 12, background: 'var(--bg-alt)', borderRadius: 8 }}>
                 <div id="add-prov-alert">
-                  {provAlert && <div className={`alert alert-${provAlert.type}`} style={{ fontSize: 12 }}>{provAlert.msg}</div>}
+                  {provAlert && <Alert type={provAlert.type} message={provAlert.msg} style={{ fontSize: 12 }} onClose={() => setProvAlert(null)} />}
                 </div>
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-end' }}>
                   <div className="form-group" style={{ marginBottom: 0, flex: 2, minWidth: 140 }}>
@@ -627,25 +662,34 @@ export default function ProductoDetalle() {
               <button className="btn btn-ghost btn-sm" type="button" onClick={limpiarFiltrosPrecios}>Limpiar filtros</button>
             </div>
 
-            {/* Mini-gráfico de tendencia */}
-            {precios && precios.length > 1 && (() => {
-              const cronologico = precios.slice().reverse();
-              const maxPrecio = Math.max(...cronologico.map(p => parseFloat(p.precio_unitario || 0)));
-              return (
-                <div style={{ marginBottom: 16, padding: '4px 0' }}>
-                  <div style={{ fontSize: 11, color: 'var(--gray)', marginBottom: 6 }}>Tendencia (más antiguo → más reciente)</div>
-                  <div style={{ display: 'flex', alignItems: 'flex-end', gap: 4, height: 60 }}>
-                    {cronologico.map((p, i) => (
-                      <div key={p.id ?? i} title={`${fechaLocal(p.fecha)}: ${formatMoney(p.precio_unitario)}`}
-                        style={{
-                          flex: 1, minWidth: 4, borderRadius: '2px 2px 0 0', background: 'var(--orange)',
-                          height: maxPrecio > 0 ? `${Math.max((parseFloat(p.precio_unitario || 0) / maxPrecio) * 100, 4)}%` : '4%',
-                        }} />
-                    ))}
-                  </div>
+            {/* F-14: precio por mes (el último registrado en cada mes), con el año anterior al lado */}
+            <div id="precios-por-mes" style={{ marginBottom: 16 }}>
+              <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center', marginBottom: 8 }}>
+                <strong style={{ fontSize: 13 }}>Precio por mes</strong>
+                <select className="form-control" id="precio-anio" style={{ width: 'auto' }} value={anioPrecio}
+                  onChange={e => setAnioPrecio(Number(e.target.value))}>
+                  {Array.from({ length: 10 }, (_, i) => anioActual - i).map(a => <option key={a} value={a}>{a}</option>)}
+                </select>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, cursor: 'pointer' }}>
+                  <input type="checkbox" id="precio-comparar" checked={compararAnio} onChange={e => setCompararAnio(e.target.checked)} />
+                  Comparar con el año anterior
+                </label>
+                <span style={{ marginLeft: 'auto' }}>
+                  <BotonExportar id="btn-exportar-precios-mes" className="btn btn-secondary btn-sm" onClick={exportarPreciosMes}
+                    filas={preciosMes ? (hayPreciosMes ? 12 : 0) : null} etiqueta="Exportar CSV" />
+                </span>
+              </div>
+              {preciosMes === null && <div style={{ fontSize: 12, color: 'var(--gray)' }}>Cargando…</div>}
+              {preciosMes !== null && !hayPreciosMes && (
+                <div style={{ fontSize: 12, color: 'var(--gray)' }}>
+                  Sin compras registradas en {anioPrecio}{compararAnio ? ` ni en ${anioPrecio - 1}` : ''}.
                 </div>
-              );
-            })()}
+              )}
+              {hayPreciosMes && <BarrasAgrupadas labels={MESES} series={seriesMes} formato={formatMoney} />}
+              <div style={{ fontSize: 11, color: 'var(--gray)', marginTop: 4 }}>
+                Cada barra es el último precio registrado en el mes. Los meses sin compra quedan vacíos.
+              </div>
+            </div>
 
             <div className="table-wrap">
               <table>
@@ -666,7 +710,7 @@ export default function ProductoDetalle() {
                       <td style={{ fontSize: 12, color: 'var(--gray)' }}>{p.precio_anterior != null ? formatMoney(p.precio_anterior) : '—'}</td>
                       <td style={{ fontWeight: 600 }}>{formatMoney(p.precio_unitario)}</td>
                       <td><VariacionPrecio abs={p.variacion_abs} pct={p.variacion_pct} anterior={p.precio_anterior} registros={p.registros_producto} /></td>
-                      <td style={{ fontSize: 13 }}>{p.proveedor || '—'}</td>
+                      <td style={{ fontSize: 13 }}><NombreCorto texto={p.proveedor} /></td>
                       <td><span className="badge badge-gray" style={{ fontSize: 10 }}>{p.fuente || '—'}</span></td>
                       <td style={{ fontSize: 12, color: 'var(--gray)' }}>{p.factura || '—'}</td>
                     </tr>

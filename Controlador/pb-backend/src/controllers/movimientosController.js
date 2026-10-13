@@ -1,7 +1,6 @@
-const jwt = require('jsonwebtoken');
 const { query } = require('../db/pool');
 const { ErrorNegocio, conTransaccion, responderError } = require('../db/tx');
-const { tipoMovimientoId, motivoMovimientoId, motivoDevolucionConsumo, descontarFifo } = require('../db/stock');
+const { tipoMovimientoId, motivoMovimientoId, motivoDevolucionConsumo, motivoCompraCajaChica, esGastoCajaChica, referenciaCajaChica, descontarFifo } = require('../db/stock');
 const auditoria = require('./auditoriaController');
 const { generarAlertasAutomaticas } = require('./alertasController');
 const insumosEspeciales = require('./insumosEspecialesController');   // CU-124
@@ -18,6 +17,30 @@ const FECHA_ISO = /^\d{4}-\d{2}-\d{2}$/;
 function hoyLocal() {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+/* ── F-11 (D73): salida con fecha pasada ──
+   La fecha llega como 'YYYY-MM-DDTHH:mm' (datetime-local, hora de Chile; el proceso corre con
+   TZ=America/Santiago) o 'YYYY-MM-DD' (se toma a mediodía). Pasada = de un día anterior a hoy.
+   Máximo DIAS_FECHA_PASADA días atrás, nunca antes del último conteo confirmado de la bodega,
+   y siempre con firma de gerencia (salida_fecha_pasada, en la ruta). */
+const DIAS_FECHA_PASADA = 14;
+
+/** Date de la fecha enviada, o null si no es válida. */
+function fechaDeSalida(fecha) {
+  const t = String(fecha ?? '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2})?)?$/.test(t)) return null;
+  const d = new Date(FECHA_ISO.test(t) ? `${t}T12:00` : t);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+/** ¿La salida trae una fecha de un día anterior a hoy? (lo usa la ruta para pedir la firma) */
+function esFechaPasada(fecha) {
+  const d = fechaDeSalida(fecha);
+  if (!d) return false;
+  const hoy = new Date();
+  hoy.setHours(0, 0, 0, 0);
+  return d < hoy;
 }
 
 // CU-30 Exc 3: mismo mensaje en entrada y salida
@@ -145,6 +168,8 @@ async function listar(req, res) {
               WHEN mi.movimiento_inventario_referencia_origen LIKE 'TRASLADO-%' THEN 'traslado'
               WHEN mi.movimiento_inventario_referencia_origen LIKE 'CONTEO-%' THEN 'conteo'
               WHEN mi.movimiento_inventario_modulo_origen <> 'inventario' THEN 'origen'
+              -- F-23: compra por caja chica registrada en Inventario (la de Finanzas sale como "Finanzas: CC-n")
+              WHEN mot.movimiento_inventario_motivo_movimiento_nombre = 'compra_caja_chica' THEN 'origen'
               WHEN mi.movimiento_inventario_evidencia_url IS NOT NULL THEN 'evidencia'
          END AS documento_tipo,
          CASE WHEN x.factura_numero IS NOT NULL THEN x.factura_numero
@@ -158,6 +183,8 @@ async function listar(req, res) {
               WHEN mi.movimiento_inventario_modulo_origen <> 'inventario'
                 THEN initcap(mi.movimiento_inventario_modulo_origen) || ': ' ||
                      COALESCE(mi.movimiento_inventario_referencia_origen, 'sin referencia')
+              WHEN mot.movimiento_inventario_motivo_movimiento_nombre = 'compra_caja_chica'
+                THEN 'Caja chica: ' || COALESCE(mi.movimiento_inventario_referencia_origen, 'sin gasto')
               ELSE mi.movimiento_inventario_evidencia_url
          END AS documento_ref
        ${HISTORIAL_FROM}
@@ -222,7 +249,8 @@ async function registrarEntrada(req, res) {
     anaquel_id,                                  // OPUS-5: anaquel destino (opcional)
     factura_id, factura_numero, factura_fecha,   // CU-28/CU-32
     fecha_pedido, fecha_recepcion,               // CU-62
-    tipo_entrada = 'compra', descripcion_motivo  // D66: compra o devolución de obra
+    tipo_entrada = 'compra', descripcion_motivo, // D66: compra o devolución de obra
+    gasto_caja_chica_id                          // F-23 (D86): n° del gasto de caja chica de Finanzas
   } = req.body;
 
   const userId = req.user.id;
@@ -277,13 +305,26 @@ async function registrarEntrada(req, res) {
   // D66: dos tipos de entrada. Compra: proveedor, precio, fecha del pedido y factura
   // obligatorios (D56). Devolución de obra: vuelve material despachado o consumido; no
   // lleva proveedor, precio ni factura, y resta del consumo (motivo devolucion_consumo).
-  if (!['compra', 'devolucion'].includes(tipo_entrada)) {
-    return res.status(400).json({ error: 'El tipo de entrada debe ser compra o devolución de obra.' });
+  // F-23 (D86): compra por caja chica. Lleva el n° del gasto de Finanzas en vez de proveedor, precio y
+  // factura (el costo queda en el gasto; el comercio va en la descripción y no es un proveedor).
+  if (!['compra', 'devolucion', 'caja_chica'].includes(tipo_entrada)) {
+    return res.status(400).json({ error: 'El tipo de entrada debe ser compra, devolución de obra o compra por caja chica.' });
   }
   const esDevolucion = tipo_entrada === 'devolucion';
+  const esCajaChica = tipo_entrada === 'caja_chica';
   const descripcion = String(descripcion_motivo ?? '').trim();
   if (descripcion.length > 255) return res.status(400).json({ error: 'La descripción admite hasta 255 caracteres.' });
-  if (esDevolucion) {
+  if (gasto_caja_chica_id != null && gasto_caja_chica_id !== '' && !esCajaChica) {
+    return res.status(400).json({ error: 'El n° de gasto de caja chica solo va en una compra por caja chica.' });
+  }
+  if (esCajaChica) {
+    if (!esGastoCajaChica(gasto_caja_chica_id)) {
+      return res.status(400).json({ error: 'Indique el n° del gasto de caja chica (un número entero mayor que 0).' });
+    }
+    if (proveedor_id || precio_unitario || factura_id || factura_numero || fecha_pedido) {
+      return res.status(400).json({ error: 'Una compra por caja chica no lleva proveedor, precio, factura ni fecha de pedido: el costo queda en el gasto de Finanzas.' });
+    }
+  } else if (esDevolucion) {
     if (!descripcion) return res.status(400).json({ error: 'Indique de qué obra o venta vuelve el material.' });
     if (proveedor_id || precio_unitario || factura_id || factura_numero || fecha_pedido) {
       return res.status(400).json({ error: 'Una devolución de obra no lleva proveedor, precio, factura ni fecha de pedido.' });
@@ -419,18 +460,22 @@ async function registrarEntrada(req, res) {
       }
 
       /* ── Movimiento de entrada ── */
-      // D66: la compra lleva compra_proveedor; la devolución, devolucion_consumo (resta del consumo)
-      const motivoId = esDevolucion ? await motivoDevolucionConsumo(client) : await motivoMovimientoId(client, 'compra_proveedor');
+      // D66: la compra lleva compra_proveedor; la devolución, devolucion_consumo (resta del consumo).
+      // F-23: la de caja chica, compra_caja_chica y la referencia CC-<n° del gasto>.
+      const motivoId = esDevolucion ? await motivoDevolucionConsumo(client)
+        : esCajaChica ? await motivoCompraCajaChica(client)
+        : await motivoMovimientoId(client, 'compra_proveedor');
       const { rows: mov } = await client.query(
         `INSERT INTO movimiento_inventario (
            movimiento_inventario_cantidad, movimiento_inventario_estado,
            material_sku, bodega_id_bodega, lote_id_lote,
            usuario_id_usuario, movimiento_inventario_tipo_movimiento_id_tipo_movimiento,
            factura_compra_id_factura_compra, movimiento_inventario_motivo_movimiento_id_motivo_movimiento,
-           movimiento_inventario_descripcion_motivo
-         ) VALUES ($1, 'completado', $2, $3, $4, $5, $6, $7, $8, $9)
+           movimiento_inventario_descripcion_motivo, movimiento_inventario_referencia_origen
+         ) VALUES ($1, 'completado', $2, $3, $4, $5, $6, $7, $8, $9, $10)
          RETURNING movimiento_inventario_id_movimiento AS id`,
-        [cantidad, sku, bodega_id, loteId, userId, tipo_movimiento_id, facturaId, motivoId, descripcion || null]
+        [cantidad, sku, bodega_id, loteId, userId, tipo_movimiento_id, facturaId, motivoId, descripcion || null,
+         esCajaChica ? referenciaCajaChica(gasto_caja_chica_id) : null]
       );
 
       /* ── Stock (OPUS-5: con anaquel destino) ──
@@ -463,7 +508,8 @@ async function registrarEntrada(req, res) {
 
     /* ── Post-commit: auditoria y efectos secundarios (no deben revertir la entrada) ── */
     auditoria.registrar(req.user?.id, 'registrar_entrada',
-      `SKU: ${sku}, cantidad: ${cantidad}, bodega: ${bodega_id}` + (anaquel_id ? `, anaquel: ${anaquel_id}` : ''));
+      `SKU: ${sku}, cantidad: ${cantidad}, bodega: ${bodega_id}` + (anaquel_id ? `, anaquel: ${anaquel_id}` : '')
+      + (esCajaChica ? `, caja chica: ${referenciaCajaChica(gasto_caja_chica_id)}` : ''));
     generarAlertasAutomaticas().catch(e => console.warn('Alertas:', e.message));
 
     // CU-114: Verificar si hay alertas de faltante activas para este SKU
@@ -595,7 +641,7 @@ const MOTIVOS_DE_OTRO_FLUJO = {
 async function registrarSalida(req, res) {
   const {
     sku, bodega_id, cantidad,
-    tipo_movimiento_id, motivo_id, descripcion_motivo, evidencia_url
+    tipo_movimiento_id, motivo_id, descripcion_motivo, evidencia_url, fecha
   } = req.body;
 
   const userId = req.user.id;
@@ -612,6 +658,22 @@ async function registrarSalida(req, res) {
   if (!motivo_id) {
     return res.status(400).json({ error: 'Seleccione el motivo de la salida.' });
   }
+  // F-11 (D73): fecha pasada opcional. Una fecha de hoy se ignora (la salida queda con la hora actual).
+  let fechaPasada = null;
+  if (fecha != null && String(fecha).trim() !== '') {
+    const d = fechaDeSalida(fecha);
+    if (!d) return res.status(400).json({ error: 'La fecha de la salida no es válida.' });
+    if (d > new Date()) return res.status(400).json({ error: 'La fecha de la salida no puede ser futura.' });
+    if (esFechaPasada(fecha)) {
+      const limite = new Date();
+      limite.setHours(0, 0, 0, 0);
+      limite.setDate(limite.getDate() - DIAS_FECHA_PASADA);
+      if (d < limite) {
+        return res.status(400).json({ error: `La fecha de la salida no puede ser de hace más de ${DIAS_FECHA_PASADA} días.` });
+      }
+      fechaPasada = d;
+    }
+  }
 
   try {
     /* ══════════════════════════════════════════════════════════════════
@@ -620,6 +682,23 @@ async function registrarSalida(req, res) {
        stock ya estaba descontado y no quedaba registro de por que.
        ══════════════════════════════════════════════════════════════════ */
     const r = await conTransaccion(async (client) => {
+      // F-11 (D73): una salida anterior al último conteo confirmado de la bodega descuadraría
+      // el ajuste ya aprobado. Se decide antes de tocar stock.
+      if (fechaPasada) {
+        const { rows: conteo } = await client.query(
+          `SELECT MAX(conteo_ciclico_fecha_confirmacion) AS fecha FROM conteo_ciclico
+           WHERE bodega_id_bodega = $1 AND conteo_ciclico_estado IN ('confirmado', 'procesado')`,
+          [bodega_id]
+        );
+        if (conteo[0].fecha && fechaPasada <= new Date(conteo[0].fecha)) {
+          const c = new Date(conteo[0].fecha);
+          throw new ErrorNegocio(400, {
+            error: `La bodega tiene un conteo confirmado el ${c.toLocaleString('es-CL', { timeZone: 'America/Santiago' })}: ` +
+                   'no se puede registrar una salida con fecha anterior.',
+          });
+        }
+      }
+
       // CU-30 Exc 3: un producto inactivo o dado de baja no admite movimientos.
       // Se decide antes de tocar stock. (Un SKU inexistente sigue cayendo en
       // "stock insuficiente" mas abajo, como antes.)
@@ -719,11 +798,12 @@ async function registrarSalida(req, res) {
            movimiento_inventario_tipo_movimiento_id_tipo_movimiento,
            movimiento_inventario_motivo_movimiento_id_motivo_movimiento,
            movimiento_inventario_descripcion_motivo,
-           movimiento_inventario_evidencia_url
-         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+           movimiento_inventario_evidencia_url,
+           movimiento_inventario_fecha_hora
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, COALESCE($10::timestamptz, now()))
          RETURNING movimiento_inventario_id_movimiento AS id`,
         [cantidad, estadoMov, sku, bodega_id, userId, tipo_movimiento_id,
-         motivo_id || null, descripcion_motivo || null, evidencia_url || null]
+         motivo_id || null, descripcion_motivo || null, evidencia_url || null, fechaPasada]
       );
 
       return { movimientoId: mov[0].id, esMermaCritica };
@@ -737,6 +817,7 @@ async function registrarSalida(req, res) {
         tipo: 'merma_pendiente',
         mensaje: `Merma de producto crítico (${sku}) pendiente de aprobación. Cantidad: ${cantidad}`,
         origen: 'movimientos',
+        ruta: '/movimientos/historial',
         rol: 'gerencia'
       });
     }
@@ -867,7 +948,7 @@ async function registrarTraslado(req, res) {
 
 /**
  * Un movimiento con lo que necesita motivoNoReversible: sus columnas, `tipo_nombre` y
- * `motivo_nombre`. Lo comparten revertir (CU-44) y authController.reautenticar (CU-42).
+ * `motivo_nombre`. Lo comparten revertir (CU-44) y validarReversible (CU-42).
  */
 const SELECT_MOVIMIENTO =
   `SELECT mi.*, tm.movimiento_inventario_tipo_movimiento_nombre AS tipo_nombre,
@@ -907,8 +988,8 @@ async function ajustarStockLote(client, sku, bodegaId, loteId, cantidad) {
  * `m` son las columnas de movimiento_inventario más `tipo_nombre` y `motivo_nombre`
  * (SELECT_MOVIMIENTO).
  *
- * La usa también authController.reautenticar (CU-42), para rechazar ANTES de
- * pedir la contraseña: el CU verifica la Excepción 1 antes de la autorización.
+ * La usa también validarReversible (CU-42), para rechazar ANTES de pedir la
+ * firma: el CU verifica la Excepción 1 antes de la autorización.
  */
 function motivoNoReversible(m) {
   const estado = m.movimiento_inventario_estado;
@@ -959,29 +1040,27 @@ function motivoNoReversible(m) {
 }
 
 /**
- * CU-44: la reversión exige el token de CU-42, atado a ESTE usuario y ESTE
- * movimiento. 403 y no 401: el frontend cierra la sesión ante un 401.
+ * Middleware de POST /:id/revertir, antes de la firma (CU-42, F-11): un movimiento que no
+ * existe o no se puede revertir (CU-44 Exc 1) se rechaza sin pedir la firma, así no se gasta.
+ * revertir lo vuelve a comprobar bajo FOR UPDATE: esto es solo el aviso temprano.
  */
-function verificarAutorizacion(req, movId) {
-  const token = req.body?.autorizacion;
-  if (!token) {
-    throw new ErrorNegocio(403, { error: 'La reversión requiere autorización: reingrese su contraseña.' });
-  }
-  let c;
+async function validarReversible(req, res, next) {
+  const { id } = req.params;
+  if (!/^\d+$/.test(String(id))) return res.status(400).json({ error: 'El id del movimiento debe ser numérico' });
   try {
-    c = jwt.verify(token, process.env.JWT_SECRET);
-  } catch {
-    throw new ErrorNegocio(403, { error: 'La autorización no es válida o expiró. Reingrese su contraseña.' });
-  }
-  if (c.tipo !== 'autorizacion' || c.accion !== 'revertir_movimiento' ||
-      String(c.uid) !== String(req.user.id) || String(c.mov) !== String(movId)) {
-    throw new ErrorNegocio(403, { error: 'La autorización no corresponde a este movimiento o a este usuario.' });
+    const { rows } = await query(SELECT_MOVIMIENTO, [id]);
+    if (rows.length === 0) return res.status(404).json({ error: 'Movimiento no encontrado' });
+    const motivo = motivoNoReversible(rows[0]);
+    if (motivo) return res.status(400).json({ error: motivo });
+    next();
+  } catch (err) {
+    responderError(res, err, 'Error validando la reversión:');
   }
 }
 
 /**
  * POST /api/movimientos/:id/revertir — CU-44 (FR-30), solo gerencia.
- * Body: { autorizacion }  (token de POST /api/auth/reautenticar, CU-42)
+ * Pide la firma de un gerente (F-11, revertir_movimiento; CU-42): la exige el middleware de la ruta.
  *
  * Mueve el stock en sentido contrario, registra un movimiento INVERSO que apunta
  * al original (movimiento_inventario_id_revertido) y marca el original como
@@ -996,8 +1075,6 @@ async function revertir(req, res) {
   const { id } = req.params;
 
   try {
-    verificarAutorizacion(req, id);
-
     const r = await conTransaccion(async (client) => {
       const m = await cargarMovimientoBloqueado(client, id);
 
@@ -1252,6 +1329,7 @@ async function verificarMermasPendientes(req, res) {
         tipo: 'merma_emergencia',
         mensaje: `EMERGENCIA: Merma de ${m.sku} (ID: ${m.id}, ${m.cantidad} uds.) lleva más de 24 horas pendiente de aprobación.`,
         origen: 'movimientos',
+        ruta: '/movimientos/historial',
         rol: 'gerencia'
       });
       notificadas++;
@@ -1377,4 +1455,4 @@ async function vincularOrdenesTrabajo(req, res) {
   }
 }
 
-module.exports = { listar, catalogos, registrarEntrada, registrarSalida, registrarTraslado, revertir, aprobarMerma, rechazarMerma, verificarMermasPendientes, vincularOrdenesTrabajo, motivoNoReversible, SELECT_MOVIMIENTO };
+module.exports = { listar, catalogos, registrarEntrada, registrarSalida, registrarTraslado, revertir, validarReversible, aprobarMerma, rechazarMerma, verificarMermasPendientes, vincularOrdenesTrabajo, esFechaPasada };
